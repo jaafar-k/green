@@ -101,6 +101,7 @@ Miyoo buttons are exposed as SDL keys (Onion/MinUI). Mapped as:
 | Select + B | Toggle bookmark on current page |
 | Select + X | Mirror horizontally |
 | Select + Y | Mirror vertically |
+| Select + L1 | Toggle dual-page mode |
 | Menu | Close file (quit if none left) |
 
 Select is a hold-modifier: chords fire on the face button; a plain Select release opens bookmarks.

@@ -907,7 +907,7 @@ int	main( int argc, char *argv[] )
 	rtd.step = 1;
 	rtd.zoomstep = 1.1;
 	rtd.bb = 0x04;
-	rtd.side_by_side = 1;
+	rtd.side_by_side = 0;
 	rtd.night = true;
 	rtd.mouse.flags = 1;
 	rtd.mouse.visibility = 500;

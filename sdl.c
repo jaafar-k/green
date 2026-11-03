@@ -1775,6 +1775,12 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 					*flags |= FLAG_RENDER;
 				}
 				return NORMAL;
+			case 'e':
+				/* Select+L1: toggle dual-page mode */
+				g_select_chord = true;
+				rtd->side_by_side = !rtd->side_by_side;
+				*flags |= FLAG_RENDER;
+				return NORMAL;
 			case SDLK_RCTRL:
 				return NORMAL;
 			default:
