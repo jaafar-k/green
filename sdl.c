@@ -83,15 +83,6 @@ static int	g_bm_view_count = 0, g_bm_sel = 0;
 static bool	g_bm_active = false;
 static bool	g_bm_loaded = false;
 
-#define RENDER_PREVIEW_DIV	4
-#define CACHE_QUALITY_NONE	0
-#define CACHE_QUALITY_PREVIEW	1
-#define CACHE_QUALITY_FINAL	2
-
-static int	g_refine_page = -1;
-static double	g_refine_tscale = 0;
-static bool	g_force_final = false;
-
 /* Miyoo Select: hold for chords, release alone opens bookmarks */
 static bool	g_select_held = false;
 static bool	g_select_chord = false;
@@ -361,75 +352,6 @@ void	GetInput( IBuffer *input, SDL_Event *event )
 	return;
 }
 
-static int	ScaleClose( double a, double b )
-{
-	double	d = a - b;
-	
-	if (d < 0)
-		d = -d;
-	return d < 1e-6;
-}
-
-// Never rasterize a page larger than the pane (Miyoo-sized screens).
-static double	CapRenderScale( PopplerPage *page, double tscale, int cap_w, int cap_h )
-{
-	int	w, h;
-	double	fx, fy, factor;
-	
-	if (tscale <= 0 || cap_w < 1 || cap_h < 1)
-		return tscale;
-	
-	Green_GetDimension( page, &w, &h, tscale, false );
-	if (w <= cap_w && h <= cap_h)
-		return tscale;
-	
-	fx = (double)cap_w / (double)w;
-	fy = (double)cap_h / (double)h;
-	factor = fx < fy ? fx : fy;
-	if (factor >= 1.0)
-		return tscale;
-	return tscale * factor;
-}
-
-static cairo_surface_t	*RasterizePage( PopplerPage *page, double scale )
-{
-	cairo_surface_t	*surface;
-	cairo_t		*context;
-	int		w, h;
-	
-	Green_GetDimension( page, &w, &h, scale, false );
-	if (w < 1)
-		w = 1;
-	if (h < 1)
-		h = 1;
-	
-	surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, w, h );
-	context = cairo_create( surface );
-	cairo_save( context );
-	cairo_scale( context, scale, scale );
-	poppler_page_render( page, context );
-	cairo_restore( context );
-	cairo_set_operator( context, CAIRO_OPERATOR_DEST_OVER );
-	cairo_set_source_rgb( context, 1., 1., 1. );
-	cairo_paint( context );
-	cairo_destroy( context );
-	return surface;
-}
-
-static Uint32	SampleCachePixel( void *pixels, int rowstride, int sw, int sh, int sx, int sy )
-{
-	if (sx < 0)
-		sx = 0;
-	else if (sx >= sw)
-		sx = sw - 1;
-	if (sy < 0)
-		sy = 0;
-	else if (sy >= sh)
-		sy = sh - 1;
-	
-	return *(Uint32 *)((char *)pixels + sy * rowstride + sx * 4);
-}
-
 void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage *page, double tscale, int page_num )
 {
 	PopplerRectangle	*rect;
@@ -437,76 +359,40 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 	SDL_Surface	*display = DrawSurface();
 	SDL_PixelFormat	fmt = *display->format;
 	cairo_surface_t	*surface;
+	cairo_t		*context;
 	void	*pixels;
 	unsigned short	ar, ag, ab, ia;
 	gdouble	tmp_d;
-	double	pwidth, pheight, final_scale, preview_scale, ratio;
+	double	pwidth, pheight;
 	guint	i, n;
 	GList	*list = NULL;
-	Uint32	*src, *dst, sample;
-	int	x, y, rowstride, sw, sh, dir_x, dir_y, cap_w, cap_h, lx, ly;
-	int	want_quality, use_scaled;
-	
-	cap_w = ViewWidth( rtd );
-	cap_h = display->h;
-	final_scale = CapRenderScale( page, tscale, cap_w, cap_h );
-	preview_scale = final_scale / RENDER_PREVIEW_DIV;
-	if (preview_scale <= 0)
-		preview_scale = final_scale;
-	
-	// Dual-page keeps overwriting the single cache; skip progressive preview there.
-	if (rtd->side_by_side || g_force_final)
-		want_quality = CACHE_QUALITY_FINAL;
-	else
-		want_quality = CACHE_QUALITY_PREVIEW;
+	Uint32	*src, *dst;
+	int	x, y, rowstride, w, h, dir_x, dir_y;
 	
 	if (doc->search_str)
 		list = poppler_page_find_text( page, doc->search_str );
 	
-	if (doc->cache.surface
-		&& doc->cache.page == page_num
-		&& ScaleClose( doc->cache.tscale, tscale )
-		&& doc->cache.quality == CACHE_QUALITY_FINAL
-		&& ScaleClose( doc->cache.render_scale, final_scale ))
-	{
+	if (doc->cache.surface && doc->cache.page == page_num && doc->cache.tscale == tscale)
 		surface = doc->cache.surface;
-		if (g_refine_page == page_num && ScaleClose( g_refine_tscale, tscale ))
-			g_refine_page = -1;
-	}
-	else if (!g_force_final
-		&& doc->cache.surface
-		&& doc->cache.page == page_num
-		&& ScaleClose( doc->cache.tscale, tscale )
-		&& doc->cache.quality >= CACHE_QUALITY_PREVIEW
-		&& ScaleClose( doc->cache.render_scale, preview_scale ))
-	{
-		surface = doc->cache.surface;
-		g_refine_page = page_num;
-		g_refine_tscale = tscale;
-	}
 	else
 	{
-		double	scale = (want_quality == CACHE_QUALITY_FINAL) ? final_scale : preview_scale;
-		int	quality = (want_quality == CACHE_QUALITY_FINAL)
-				? CACHE_QUALITY_FINAL : CACHE_QUALITY_PREVIEW;
-		
-		surface = RasterizePage( page, scale );
+		Green_GetDimension( page, &w, &h, tscale, false );
+		surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, w, h );
+		context = cairo_create( surface );
+		cairo_save( context );
+		cairo_scale( context, tscale, tscale );
+		poppler_page_render( page, context );
+		cairo_restore( context );
+		cairo_set_operator( context, CAIRO_OPERATOR_DEST_OVER );
+		cairo_set_source_rgb( context, 1., 1., 1. );
+		cairo_paint( context );
+		cairo_destroy( context );
 		if (doc->cache.surface)
 			cairo_surface_destroy( doc->cache.surface );
 		
 		doc->cache.surface = surface;
 		doc->cache.page = page_num;
 		doc->cache.tscale = tscale;
-		doc->cache.render_scale = scale;
-		doc->cache.quality = quality;
-		
-		if (quality == CACHE_QUALITY_PREVIEW)
-		{
-			g_refine_page = page_num;
-			g_refine_tscale = tscale;
-		}
-		else if (g_refine_page == page_num && ScaleClose( g_refine_tscale, tscale ))
-			g_refine_page = -1;
 	}
 	
 	if (doc->rotation == 1)
@@ -532,44 +418,20 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 	
 	pixels = cairo_image_surface_get_data( surface );
 	rowstride = cairo_image_surface_get_stride( surface );
-	sw = cairo_image_surface_get_width( surface );
-	sh = cairo_image_surface_get_height( surface );
-	ratio = (tscale > 0) ? (doc->cache.render_scale / tscale) : 1.0;
-	use_scaled = !ScaleClose( ratio, 1.0 );
-	
 	SDL_LockSurface( display );
-	if (!use_scaled)
+	if (doc->rotation % 2)
 	{
-		if (doc->rotation % 2)
+		for (y = 0; y < dest.h; y++)
 		{
-			for (y = 0; y < dest.h; y++)
+			src = (Uint32 *)((char *)pixels + (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * 4
+				+ (yoff + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride);
+			dst = display->pixels + (dest.y + y) * display->pitch
+				+ dest.x * fmt.BytesPerPixel;
+			for (x = 0; x < dest.w; x++)
 			{
-				src = (Uint32 *)((char *)pixels + (yoff + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride)
-					+ (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0));
-				dst = display->pixels + (dest.y + y) * display->pitch
-					+ dest.x * fmt.BytesPerPixel;
-				for (x = 0; x < dest.w; x++)
-				{
-					*dst = MapDisplayPixel( *src, &fmt, rtd->night );
-					src = (Uint32 *)((char *)src + dir_x * rowstride);
-					dst = (void *)dst + fmt.BytesPerPixel;
-				}
-			}
-		}
-		else
-		{
-			for (y = 0; y < dest.h; y++)
-			{
-				src = (Uint32 *)((char *)pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride)
-					+ (xoff + (dir_x < 0 ? dest.w - 1 : 0));
-				dst = display->pixels + (dest.y + y) * display->pitch
-					+ dest.x * fmt.BytesPerPixel;
-				for (x = 0; x < dest.w; x++)
-				{
-					*dst = MapDisplayPixel( *src, &fmt, rtd->night );
-					src += dir_x;
-					dst = (void *)dst + fmt.BytesPerPixel;
-				}
+				*dst = MapDisplayPixel( *src, &fmt, rtd->night );
+				src = (Uint32 *)((char *)src + dir_x * rowstride);
+				dst = (void *)dst + fmt.BytesPerPixel;
 			}
 		}
 	}
@@ -577,23 +439,14 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 	{
 		for (y = 0; y < dest.h; y++)
 		{
+			src = (Uint32 *)((char *)pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride
+				+ (xoff + (dir_x < 0 ? dest.w - 1 : 0)) * 4);
 			dst = display->pixels + (dest.y + y) * display->pitch
 				+ dest.x * fmt.BytesPerPixel;
 			for (x = 0; x < dest.w; x++)
 			{
-				if (doc->rotation % 2)
-				{
-					lx = xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
-					ly = yoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
-				}
-				else
-				{
-					lx = xoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
-					ly = yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
-				}
-				sample = SampleCachePixel( pixels, rowstride, sw, sh,
-					(int)(lx * ratio), (int)(ly * ratio) );
-				*dst = MapDisplayPixel( sample, &fmt, rtd->night );
+				*dst = MapDisplayPixel( *src, &fmt, rtd->night );
+				src += dir_x;
 				dst = (void *)dst + fmt.BytesPerPixel;
 			}
 		}
@@ -680,26 +533,36 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 			else if (rect->y2 > dest.h)
 				rect->y2 = dest.h;
 			
-			for (y = rect->y1; y < (int)rect->y2; y++)
+			if (doc->rotation % 2)
 			{
-				dst = display->pixels + (dest.y + y) * display->pitch
-					+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
-				for (x = rect->x1; x < (int)rect->x2; x++)
+				for (y = rect->y1; y < (int)rect->y2; y++)
 				{
-					if (doc->rotation % 2)
+					src = (Uint32 *)((char *)pixels + (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * 4
+						+ (yoff + dir_x * (int)rect->x1 + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride);
+					dst = display->pixels + (dest.y + y) * display->pitch
+						+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
+					for (x = rect->x1; x < (int)rect->x2; x++)
 					{
-						lx = xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
-						ly = yoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
+						*dst = MapBlendPixel( *src, &fmt, ia, ar, ag, ab, rtd->night );
+						src = (Uint32 *)((char *)src + dir_x * rowstride);
+						dst = (void *)dst + fmt.BytesPerPixel;
 					}
-					else
+				}
+			}
+			else
+			{
+				for (y = rect->y1; y < (int)rect->y2; y++)
+				{
+					src = (Uint32 *)((char *)pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride
+						+ (xoff + dir_x * (int)rect->x1 + (dir_x < 0 ? dest.w - 1 : 0)) * 4);
+					dst = display->pixels + (dest.y + y) * display->pitch
+						+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
+					for (x = rect->x1; x < (int)rect->x2; x++)
 					{
-						lx = xoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
-						ly = yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
+						*dst = MapBlendPixel( *src, &fmt, ia, ar, ag, ab, rtd->night );
+						src += dir_x;
+						dst = (void *)dst + fmt.BytesPerPixel;
 					}
-					sample = SampleCachePixel( pixels, rowstride, sw, sh,
-						(int)(lx * ratio), (int)(ly * ratio) );
-					*dst = MapBlendPixel( sample, &fmt, ia, ar, ag, ab, rtd->night );
-					dst = (void *)dst + fmt.BytesPerPixel;
 				}
 			}
 		}
@@ -1757,7 +1620,6 @@ void	Render( Green_RTD *rtd )
 	RenderToast( display );
 	
 	Present();
-	g_force_final = false;
 	return;
 }
 
@@ -2624,13 +2486,6 @@ int	Green_SDL_Main( Green_RTD *rtd )
 					{
 						if (SDL_GetTicks() >= g_toast_until)
 							g_toast_until = 0;
-						flags |= FLAG_RENDER;
-					}
-					
-					// Upgrade low-res preview to screen-capped final quality
-					if (g_refine_page >= 0)
-					{
-						g_force_final = true;
 						flags |= FLAG_RENDER;
 					}
 					
