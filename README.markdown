@@ -30,6 +30,7 @@ MATE.
  - goto page
  - search function
  - table of contents navigation
+ - user bookmarks (persistent)
  - night mode
  - scheme support
 
@@ -54,9 +55,9 @@ OPTIONS
 
 PROGRAM OPERATION
 ------------------
-`<TAB>` - Show/hide the table of contents.  
+`o` - Show/hide the table of contents.  
 `<F<n>>` - Go to the n-th document.  
-`ESC` - Escape current input mode.    
+`ESC` / Menu - Escape current input mode, or close file when idle.    
 `q` - Quit
 
 
@@ -75,12 +76,44 @@ NAVIGATION INSIDE A DOCUMENT
 `c` - close document.
 
 ### TABLE OF CONTENTS
-`<TAB>` - Enter the table of contents (for PDFs that have one).  
+`o` - Enter the table of contents (for PDFs that have one).  
 `<j, k>` - Move the selection up and down.  
 `<RETURN>` - Go to the selected section and close the table of contents.  
 `<l>` - Expand a section to show its subsections; on a leaf section, jump to it.  
 `<h>` - Collapse a section, hiding its subsections.  
 `<ESC>` - Leave the table of contents without jumping.
+
+### MIYOO MINI CONTROLS
+Miyoo buttons are exposed as SDL keys (Onion/MinUI). Mapped as:
+
+| Button | Action |
+|--------|--------|
+| D-pad | Scroll / navigate |
+| A | Fit to width |
+| B | Rotate 90° |
+| X | Zoom in |
+| Y | Zoom out |
+| L1 / R1 | Previous / next page |
+| L2 / R2 | Jump back / forward 10 pages |
+| Start | Table of contents |
+| Select (tap) | Bookmarks menu |
+| Select + A | Toggle night mode |
+| Select + B | Toggle bookmark on current page |
+| Select + X | Mirror horizontally |
+| Select + Y | Mirror vertically |
+| Menu | Close file (quit if none left) |
+
+Select is a hold-modifier: chords fire on the face button; a plain Select release opens bookmarks.
+
+### BOOKMARKS
+`b` - Open the bookmarks panel for the current document.  
+`B` (`Shift+b`) - Toggle a bookmark on the current page.  
+In the bookmarks panel:  
+`<j, k>` - Move the selection up and down.  
+`<RETURN>` - Jump to the selected bookmark.  
+`a` - Add a bookmark for the current page.  
+`x` - Delete the selected bookmark.  
+`<ESC>` / `b` - Close the bookmarks panel.
 
 ### FITTING
 `fn` - disable page fitting mode.
@@ -120,6 +153,12 @@ FILES
 *$(HOME)/.green.conf*     
   Per user configuration file.  
 
+*$(HOME)/.green.bookmarks*  
+  Persistent user bookmarks (page + document URI).  
+
+*$(HOME)/.green.pages*  
+  Last-viewed page per document (restored on reopen).  
+
 */usr/local/etc/green.conf*  
   The system wide configuration file.   
 
@@ -148,4 +187,15 @@ This fork adds the following on top of the original `green`:
    next page pair.
  - **Search backwards** (`,`): in addition to `n` for the next result, `,`
    jumps to the previous search result.
+ - **Bookmarks** (`b` / `Shift+b`): save pages per document to
+   `~/.green.bookmarks`. Open the panel with `b`, toggle the current page
+   with `Shift+b`, add/delete from the panel with `a`/`x`.
+ - **Last page restore**: remembers the current page per document in
+   `~/.green.pages` and jumps back there when the file is opened again.
+ - **Fast page display on weak devices**: page rasters are capped to the
+   screen/pane size (no oversized bitmaps), and single-page mode shows a
+   1/4-scale preview immediately, then refines to full screen quality on
+   the next idle tick.
+ - **Miyoo Mini controls**: handheld mapping with Select chords (tap Select =
+   bookmarks, Start = TOC, Select+A/B/X/Y = night / bookmark / mirrors).
 

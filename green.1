@@ -45,9 +45,9 @@ In addition to the baz segments, also parse the blurfl headers.
 Recursive mode. Operates as fast as lightning at the expense of a megabyte
 of virtual memory.
 .SS "PROGRAM OPERATION"
-\fB<TAB>\fR - Show/hide the table of contents.
+\fBo\fR - Show/hide the table of contents.
 \fB<F<n>>\fR - Go to the n-th document.
-\fBESC\fR - Escape current input mode.  
+\fBESC\fR / Menu - Escape current input mode, or close file when idle.
 \fBq\fR - Quit
 .SS "NAVIGATION INSIDE A DOCUMENT"
 \fB<h, left arrow>\fR - Scroll left.
@@ -61,15 +61,39 @@ of virtual memory.
 \fB<i>\fR - Toggle night mode (inverted colors).
 \fB<d>\fR - Toggle side-by-side (double page) mode.
 .SS "TABLE OF CONTENTS"
-\fB<TAB>\fR - Enter the table of contents.
+\fBo\fR - Enter the table of contents.
 \fB<j, k>\fR - Move the selection up and down.
 \fB<RETURN>\fR - Go to the selected section.
 \fB<l>\fR - Expand a section to show subsections, or enter a leaf section.
 \fB<h>\fR - Collapse a section, hiding its subsections.
 \fB<ESC>\fR - Leave the table of contents.
+.SS "MIYOO MINI CONTROLS"
+\fBA\fR - Fit to width.
+\fBB\fR - Rotate 90 degrees.
+\fBX\fR / \fBY\fR - Zoom in / out.
+\fBL1\fR / \fBR1\fR - Previous / next page.
+\fBL2\fR / \fBR2\fR - Jump back / forward 10 pages.
+\fBStart\fR - Table of contents.
+\fBSelect\fR (tap) - Bookmarks menu.
+\fBSelect+A\fR - Toggle night mode.
+\fBSelect+B\fR - Toggle bookmark.
+\fBSelect+X\fR / \fBSelect+Y\fR - Mirror horizontally / vertically.
+\fBMenu\fR - Close file (quit if none left).
+\fBD-pad\fR - Scroll / navigate.
+.SS BOOKMARKS
+\fBb\fR - Open the bookmarks panel.
+\fBB\fR (\fBShift+b\fR) - Toggle a bookmark on the current page.
+\fBa\fR - Add a bookmark for the current page (in the panel).
+\fBx\fR - Delete the selected bookmark.
+\fB<RETURN>\fR - Jump to the selected bookmark.
+\fB<ESC>\fR - Close the bookmarks panel.
 .SS FILES
 \fI$(HOME)/.green.conf\fR 
 Per user configuration file.
+\fI$(HOME)/.green.bookmarks\fR
+Persistent user bookmarks.
+\fI$(HOME)/.green.pages\fR
+Last-viewed page per document.
 \fI/usr/local/etc/green.conf\fR
 The system wide configuration file.
 .SS AUTHOR

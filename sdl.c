@@ -16,6 +16,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <termios.h>
 #include <unistd.h>
 #include <SDL.h>
@@ -28,7 +29,7 @@
 
 typedef enum
 {
-	NORMAL, GOTO, SEARCH, FIT, ROTATE, MIRROR, TOC
+	NORMAL, GOTO, SEARCH, FIT, ROTATE, MIRROR, TOC, BOOKMARKS
 	
 }	RState;
 
@@ -67,6 +68,40 @@ static TOCNode	*g_toc = NULL;
 static TOCEntry	*g_toc_entries = NULL;
 static int	g_toc_count = 0, g_toc_sel = 0, g_toc_doc = -1;
 static bool	g_toc_active = false;
+
+typedef struct
+{
+	char	*uri;
+	int	page;
+		// 0-based page index
+}	Bookmark;
+
+static Bookmark	*g_bookmarks = NULL;
+static int	g_bm_count = 0;
+static int	*g_bm_view = NULL;
+static int	g_bm_view_count = 0, g_bm_sel = 0;
+static bool	g_bm_active = false;
+static bool	g_bm_loaded = false;
+
+#define RENDER_PREVIEW_DIV	4
+#define CACHE_QUALITY_NONE	0
+#define CACHE_QUALITY_PREVIEW	1
+#define CACHE_QUALITY_FINAL	2
+
+static int	g_refine_page = -1;
+static double	g_refine_tscale = 0;
+static bool	g_force_final = false;
+
+/* Miyoo Select: hold for chords, release alone opens bookmarks */
+static bool	g_select_held = false;
+static bool	g_select_chord = false;
+/* Miyoo X/Y (LSHIFT/LALT): zoom on release so Shift+b etc. still work */
+static bool	g_x_held = false;
+static bool	g_x_chord = false;
+static bool	g_y_held = false;
+static bool	g_y_chord = false;
+
+static int	ViewWidth( Green_RTD *rtd );
 
 // Simple 5x7 bitmap font for basic ASCII characters (32-126)
 // Each character is represented by 7 bytes, one per row
@@ -279,6 +314,75 @@ void	GetInput( IBuffer *input, SDL_Event *event )
 	return;
 }
 
+static int	ScaleClose( double a, double b )
+{
+	double	d = a - b;
+	
+	if (d < 0)
+		d = -d;
+	return d < 1e-6;
+}
+
+// Never rasterize a page larger than the pane (Miyoo-sized screens).
+static double	CapRenderScale( PopplerPage *page, double tscale, int cap_w, int cap_h )
+{
+	int	w, h;
+	double	fx, fy, factor;
+	
+	if (tscale <= 0 || cap_w < 1 || cap_h < 1)
+		return tscale;
+	
+	Green_GetDimension( page, &w, &h, tscale, false );
+	if (w <= cap_w && h <= cap_h)
+		return tscale;
+	
+	fx = (double)cap_w / (double)w;
+	fy = (double)cap_h / (double)h;
+	factor = fx < fy ? fx : fy;
+	if (factor >= 1.0)
+		return tscale;
+	return tscale * factor;
+}
+
+static cairo_surface_t	*RasterizePage( PopplerPage *page, double scale )
+{
+	cairo_surface_t	*surface;
+	cairo_t		*context;
+	int		w, h;
+	
+	Green_GetDimension( page, &w, &h, scale, false );
+	if (w < 1)
+		w = 1;
+	if (h < 1)
+		h = 1;
+	
+	surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, w, h );
+	context = cairo_create( surface );
+	cairo_save( context );
+	cairo_scale( context, scale, scale );
+	poppler_page_render( page, context );
+	cairo_restore( context );
+	cairo_set_operator( context, CAIRO_OPERATOR_DEST_OVER );
+	cairo_set_source_rgb( context, 1., 1., 1. );
+	cairo_paint( context );
+	cairo_destroy( context );
+	return surface;
+}
+
+static Uint32	SampleCachePixel( void *pixels, int rowstride, int sw, int sh, int sx, int sy )
+{
+	if (sx < 0)
+		sx = 0;
+	else if (sx >= sw)
+		sx = sw - 1;
+	if (sy < 0)
+		sy = 0;
+	else if (sy >= sh)
+		sy = sh - 1;
+	
+	return *(Uint32 *)((char *)pixels + sy * rowstride + sx * 4);
+}
+
 void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage *page, double tscale, int page_num )
 {
 	PopplerRectangle	*rect;
@@ -286,42 +390,78 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 	SDL_Surface	*display = SDL_GetVideoSurface();
 	SDL_PixelFormat	fmt = *display->format;
 	cairo_surface_t	*surface;
-	cairo_t		*context;
 	void	*pixels;
 	unsigned short	ar, ag, ab, ia;
 	gdouble	tmp_d;
-	double	pwidth, pheight;
+	double	pwidth, pheight, final_scale, preview_scale, ratio;
 	guint	i, n;
 	GList	*list = NULL;
-	Uint32	*src, *dst;
-	int	x, y, rowstride, w, h, dir_x, dir_y;
-
+	Uint32	*src, *dst, sample;
+	int	x, y, rowstride, sw, sh, dir_x, dir_y, cap_w, cap_h, lx, ly;
+	int	want_quality, use_scaled;
+	
+	cap_w = ViewWidth( rtd );
+	cap_h = display->h;
+	final_scale = CapRenderScale( page, tscale, cap_w, cap_h );
+	preview_scale = final_scale / RENDER_PREVIEW_DIV;
+	if (preview_scale <= 0)
+		preview_scale = final_scale;
+	
+	// Dual-page keeps overwriting the single cache; skip progressive preview there.
+	if (rtd->side_by_side || g_force_final)
+		want_quality = CACHE_QUALITY_FINAL;
+	else
+		want_quality = CACHE_QUALITY_PREVIEW;
+	
 	if (doc->search_str)
 		list = poppler_page_find_text( page, doc->search_str );
-
-	if (doc->cache.surface && doc->cache.page == page_num && doc->cache.tscale == tscale)
+	
+	if (doc->cache.surface
+		&& doc->cache.page == page_num
+		&& ScaleClose( doc->cache.tscale, tscale )
+		&& doc->cache.quality == CACHE_QUALITY_FINAL
+		&& ScaleClose( doc->cache.render_scale, final_scale ))
+	{
 		surface = doc->cache.surface;
+		if (g_refine_page == page_num && ScaleClose( g_refine_tscale, tscale ))
+			g_refine_page = -1;
+	}
+	else if (!g_force_final
+		&& doc->cache.surface
+		&& doc->cache.page == page_num
+		&& ScaleClose( doc->cache.tscale, tscale )
+		&& doc->cache.quality >= CACHE_QUALITY_PREVIEW
+		&& ScaleClose( doc->cache.render_scale, preview_scale ))
+	{
+		surface = doc->cache.surface;
+		g_refine_page = page_num;
+		g_refine_tscale = tscale;
+	}
 	else
 	{
-		Green_GetDimension( page, &w, &h, tscale, false );
-		surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, w, h );
-		context = cairo_create( surface );
-		cairo_save( context );
-		cairo_scale( context, tscale, tscale );
-		poppler_page_render( page, context );
-		cairo_restore( context );
-		cairo_set_operator( context, CAIRO_OPERATOR_DEST_OVER );
-		cairo_set_source_rgb( context, 1., 1., 1. );
-		cairo_paint( context );
-		cairo_destroy( context );
+		double	scale = (want_quality == CACHE_QUALITY_FINAL) ? final_scale : preview_scale;
+		int	quality = (want_quality == CACHE_QUALITY_FINAL)
+				? CACHE_QUALITY_FINAL : CACHE_QUALITY_PREVIEW;
+		
+		surface = RasterizePage( page, scale );
 		if (doc->cache.surface)
 			cairo_surface_destroy( doc->cache.surface );
-
+		
 		doc->cache.surface = surface;
 		doc->cache.page = page_num;
 		doc->cache.tscale = tscale;
+		doc->cache.render_scale = scale;
+		doc->cache.quality = quality;
+		
+		if (quality == CACHE_QUALITY_PREVIEW)
+		{
+			g_refine_page = page_num;
+			g_refine_tscale = tscale;
+		}
+		else if (g_refine_page == page_num && ScaleClose( g_refine_tscale, tscale ))
+			g_refine_page = -1;
 	}
-
+	
 	if (doc->rotation == 1)
 	{
 		dir_x = -1;
@@ -339,26 +479,50 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 	}
 	else
 		dir_x = dir_y = 1;
-
+	
 	if (doc->mirrored)
 		dir_y *= -1;
-
+	
 	pixels = cairo_image_surface_get_data( surface );
 	rowstride = cairo_image_surface_get_stride( surface );
+	sw = cairo_image_surface_get_width( surface );
+	sh = cairo_image_surface_get_height( surface );
+	ratio = (tscale > 0) ? (doc->cache.render_scale / tscale) : 1.0;
+	use_scaled = !ScaleClose( ratio, 1.0 );
+	
 	SDL_LockSurface( display );
-	if (doc->rotation % 2)
+	if (!use_scaled)
 	{
-		for (y = 0; y < dest.h; y++)
+		if (doc->rotation % 2)
 		{
-			src = pixels + (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * 4 + (yoff + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride;
-			dst = display->pixels + (dest.y + y) * display->pitch
-				+ dest.x * fmt.BytesPerPixel;
-			for (x = 0; x < dest.w; x++)
+			for (y = 0; y < dest.h; y++)
 			{
-				*dst = MapDisplayPixel( *src, &fmt, rtd->night );
-				
-				src = (void*)src + dir_x * rowstride;
-				dst = (void*)dst + fmt.BytesPerPixel;
+				src = (Uint32 *)((char *)pixels + (yoff + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride)
+					+ (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0));
+				dst = display->pixels + (dest.y + y) * display->pitch
+					+ dest.x * fmt.BytesPerPixel;
+				for (x = 0; x < dest.w; x++)
+				{
+					*dst = MapDisplayPixel( *src, &fmt, rtd->night );
+					src = (Uint32 *)((char *)src + dir_x * rowstride);
+					dst = (void *)dst + fmt.BytesPerPixel;
+				}
+			}
+		}
+		else
+		{
+			for (y = 0; y < dest.h; y++)
+			{
+				src = (Uint32 *)((char *)pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride)
+					+ (xoff + (dir_x < 0 ? dest.w - 1 : 0));
+				dst = display->pixels + (dest.y + y) * display->pitch
+					+ dest.x * fmt.BytesPerPixel;
+				for (x = 0; x < dest.w; x++)
+				{
+					*dst = MapDisplayPixel( *src, &fmt, rtd->night );
+					src += dir_x;
+					dst = (void *)dst + fmt.BytesPerPixel;
+				}
 			}
 		}
 	}
@@ -366,15 +530,24 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 	{
 		for (y = 0; y < dest.h; y++)
 		{
-			src = pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride + (xoff + (dir_x < 0 ? dest.w - 1 : 0)) * 4;
 			dst = display->pixels + (dest.y + y) * display->pitch
 				+ dest.x * fmt.BytesPerPixel;
 			for (x = 0; x < dest.w; x++)
 			{
-				*dst = MapDisplayPixel( *src, &fmt, rtd->night );
-				
-				src += dir_x;
-				dst = (void*)dst + fmt.BytesPerPixel;
+				if (doc->rotation % 2)
+				{
+					lx = xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
+					ly = yoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
+				}
+				else
+				{
+					lx = xoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
+					ly = yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
+				}
+				sample = SampleCachePixel( pixels, rowstride, sw, sh,
+					(int)(lx * ratio), (int)(ly * ratio) );
+				*dst = MapDisplayPixel( sample, &fmt, rtd->night );
+				dst = (void *)dst + fmt.BytesPerPixel;
 			}
 		}
 	}
@@ -410,14 +583,14 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 				rect->x2 = rect->y2;
 				rect->y2 = tmp_d;
 			}
-
+			
 			if (doc->mirrored)
 			{
 				tmp_d = rect->y1;
 				rect->y1 = dest.h - rect->y2;
 				rect->y2 = dest.h - tmp_d;
 			}
-
+			
 			if (doc->rotation == 1)
 			{
 				tmp_d = rect->x1;
@@ -439,7 +612,7 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 				rect->y1 = dest.h - rect->y2;
 				rect->y2 = dest.h - tmp_d;
 			}
-
+			
 			if (rect->x1 > dest.w)
 				continue;
 			else if (rect->x1 < 0)
@@ -460,36 +633,26 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 			else if (rect->y2 > dest.h)
 				rect->y2 = dest.h;
 			
-			if (doc->rotation % 2)
+			for (y = rect->y1; y < (int)rect->y2; y++)
 			{
-				for (y = rect->y1; y < (int)rect->y2; y++)
+				dst = display->pixels + (dest.y + y) * display->pitch
+					+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
+				for (x = rect->x1; x < (int)rect->x2; x++)
 				{
-					src = pixels + (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * 4 + (yoff + dir_x * (int)rect->x1 + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride;
-					dst = display->pixels + (dest.y + y) * display->pitch
-						+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
-					for (x = rect->x1; x < (int)rect->x2; x++)
+					if (doc->rotation % 2)
 					{
-						*dst = MapBlendPixel( *src, &fmt, ia, ar, ag, ab, rtd->night );
-						
-						src = (void*)src + dir_x * rowstride;
-						dst = (void*)dst + fmt.BytesPerPixel;
+						lx = xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
+						ly = yoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
 					}
-				}
-			}
-			else
-			{
-				for (y = rect->y1; y < (int)rect->y2; y++)
-				{
-					src = pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride + (xoff + dir_x * (int)rect->x1 + (dir_x < 0 ? dest.w - 1 : 0)) * 4;
-					dst = display->pixels + (dest.y + y) * display->pitch
-						+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
-					for (x = rect->x1; x < (int)rect->x2; x++)
+					else
 					{
-						*dst = MapBlendPixel( *src, &fmt, ia, ar, ag, ab, rtd->night );
-						
-						src += dir_x;
-						dst = (void*)dst + fmt.BytesPerPixel;
+						lx = xoff + dir_x * x + (dir_x < 0 ? dest.w - 1 : 0);
+						ly = yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0);
 					}
+					sample = SampleCachePixel( pixels, rowstride, sw, sh,
+						(int)(lx * ratio), (int)(ly * ratio) );
+					*dst = MapBlendPixel( sample, &fmt, ia, ar, ag, ab, rtd->night );
+					dst = (void *)dst + fmt.BytesPerPixel;
 				}
 			}
 		}
@@ -1021,6 +1184,366 @@ static RState	TOCInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags 
 	return TOC;
 }
 
+static char	*BookmarksPath( void )
+{
+	static char	path[512];
+	const char	*home = getenv( "HOME" );
+	
+	if (!home || !*home)
+		return NULL;
+	if (snprintf( path, sizeof( path ), "%s/.green.bookmarks", home ) >= (int)sizeof( path ))
+		return NULL;
+	return path;
+}
+
+static void	RebuildBookmarkView( Green_RTD *rtd )
+{
+	Green_Document	*doc;
+	int		i, n = 0;
+	
+	free( g_bm_view );
+	g_bm_view = NULL;
+	g_bm_view_count = 0;
+	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
+	{
+		g_bm_sel = 0;
+		return;
+	}
+	
+	doc = rtd->docs[rtd->doc_cur];
+	for (i = 0; i < g_bm_count; i++)
+		if (!strcmp( g_bookmarks[i].uri, doc->uri ))
+			n++;
+	
+	if (!n)
+	{
+		g_bm_sel = 0;
+		return;
+	}
+	
+	g_bm_view = malloc( n * sizeof( *g_bm_view ) );
+	if (!g_bm_view)
+		return;
+	
+	n = 0;
+	for (i = 0; i < g_bm_count; i++)
+		if (!strcmp( g_bookmarks[i].uri, doc->uri ))
+			g_bm_view[n++] = i;
+	
+	g_bm_view_count = n;
+	if (g_bm_sel >= g_bm_view_count)
+		g_bm_sel = g_bm_view_count ? g_bm_view_count - 1 : 0;
+	return;
+}
+
+static int	CompareBookmarks( const void *a, const void *b )
+{
+	const Bookmark	*ba = a, *bb = b;
+	int		cmp = strcmp( ba->uri, bb->uri );
+	
+	if (cmp)
+		return cmp;
+	return ba->page - bb->page;
+}
+
+static void	SaveBookmarks( void )
+{
+	FILE	*file;
+	char	*path = BookmarksPath();
+	int	i;
+	
+	if (!path)
+		return;
+	
+	file = fopen( path, "w" );
+	if (!file)
+		return;
+	
+	for (i = 0; i < g_bm_count; i++)
+		fprintf( file, "%d %s\n", g_bookmarks[i].page + 1, g_bookmarks[i].uri );
+	
+	fclose( file );
+	return;
+}
+
+static void	LoadBookmarks( void )
+{
+	FILE	*file;
+	char	*path = BookmarksPath();
+	char	line[4096];
+	
+	if (g_bm_loaded || !path)
+		return;
+	
+	g_bm_loaded = true;
+	file = fopen( path, "r" );
+	if (!file)
+		return;
+	
+	while (fgets( line, sizeof( line ), file ))
+	{
+		char	*uri, *end;
+		long	page;
+		Bookmark	*tmp;
+		
+		if (line[0] == '#' || line[0] == '\n')
+			continue;
+		
+		page = strtol( line, &uri, 10 );
+		if (uri == line || page < 1)
+			continue;
+		while (*uri == ' ' || *uri == '\t')
+			uri++;
+		end = uri + strlen( uri );
+		while (end > uri && (end[-1] == '\n' || end[-1] == '\r'))
+			*--end = 0;
+		if (!*uri)
+			continue;
+		
+		tmp = realloc( g_bookmarks, (g_bm_count + 1) * sizeof( *g_bookmarks ) );
+		if (!tmp)
+			break;
+		g_bookmarks = tmp;
+		g_bookmarks[g_bm_count].uri = strdup( uri );
+		g_bookmarks[g_bm_count].page = (int)page - 1;
+		if (!g_bookmarks[g_bm_count].uri)
+			break;
+		g_bm_count++;
+	}
+	
+	fclose( file );
+	if (g_bm_count > 1)
+		qsort( g_bookmarks, g_bm_count, sizeof( *g_bookmarks ), CompareBookmarks );
+	return;
+}
+
+static int	FindBookmark( const char *uri, int page )
+{
+	int	i;
+	
+	for (i = 0; i < g_bm_count; i++)
+		if (g_bookmarks[i].page == page && !strcmp( g_bookmarks[i].uri, uri ))
+			return i;
+	return -1;
+}
+
+static int	AddBookmark( Green_RTD *rtd )
+{
+	Green_Document	*doc;
+	Bookmark	*tmp;
+	char		*uri;
+	int		idx;
+	
+	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
+		return 0;
+	
+	doc = rtd->docs[rtd->doc_cur];
+	idx = FindBookmark( doc->uri, doc->page_cur );
+	if (idx >= 0)
+		return 0;
+	
+	uri = strdup( doc->uri );
+	if (!uri)
+		return 0;
+	
+	tmp = realloc( g_bookmarks, (g_bm_count + 1) * sizeof( *g_bookmarks ) );
+	if (!tmp)
+	{
+		free( uri );
+		return 0;
+	}
+	
+	g_bookmarks = tmp;
+	g_bookmarks[g_bm_count].uri = uri;
+	g_bookmarks[g_bm_count].page = doc->page_cur;
+	g_bm_count++;
+	qsort( g_bookmarks, g_bm_count, sizeof( *g_bookmarks ), CompareBookmarks );
+	SaveBookmarks();
+	RebuildBookmarkView( rtd );
+	idx = FindBookmark( doc->uri, doc->page_cur );
+	if (idx >= 0)
+	{
+		int	i;
+		for (i = 0; i < g_bm_view_count; i++)
+			if (g_bm_view[i] == idx)
+			{
+				g_bm_sel = i;
+				break;
+			}
+	}
+	return 1;
+}
+
+static int	RemoveBookmarkAt( Green_RTD *rtd, int global_idx )
+{
+	int	i;
+	
+	if (global_idx < 0 || global_idx >= g_bm_count)
+		return 0;
+	
+	free( g_bookmarks[global_idx].uri );
+	for (i = global_idx; i < g_bm_count - 1; i++)
+		g_bookmarks[i] = g_bookmarks[i + 1];
+	g_bm_count--;
+	if (!g_bm_count)
+	{
+		free( g_bookmarks );
+		g_bookmarks = NULL;
+	}
+	else
+	{
+		Bookmark	*tmp = realloc( g_bookmarks, g_bm_count * sizeof( *g_bookmarks ) );
+		if (tmp)
+			g_bookmarks = tmp;
+	}
+	SaveBookmarks();
+	RebuildBookmarkView( rtd );
+	return 1;
+}
+
+static int	ToggleBookmark( Green_RTD *rtd )
+{
+	Green_Document	*doc;
+	int		idx;
+	
+	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
+		return 0;
+	
+	doc = rtd->docs[rtd->doc_cur];
+	idx = FindBookmark( doc->uri, doc->page_cur );
+	if (idx >= 0)
+		return RemoveBookmarkAt( rtd, idx );
+	return AddBookmark( rtd );
+}
+
+static void	RenderBookmarks( SDL_Surface *display, Green_RTD *rtd )
+{
+	SDL_Rect	panel, hl;
+	Uint32		title_col, entry_col, sel_col, sel_bg, help_col;
+	int		panel_w, x0, y0, line_h, max_lines, start, i;
+	char		buf[64];
+	
+	if (!g_bm_active)
+		return;
+	
+	panel_w = display->w / 3;
+	if (panel_w > 500)
+		panel_w = 500;
+	if (panel_w < 200)
+		panel_w = display->w < 200 ? display->w : 200;
+	
+	panel.x = 0;
+	panel.y = 0;
+	panel.w = panel_w;
+	panel.h = display->h;
+	SDL_FillRect( display, &panel, SDL_MapRGB( display->format, 0x14, 0x14, 0x14 ) );
+	
+	title_col = SDL_MapRGB( display->format, 0xE8, 0xE8, 0xE8 );
+	entry_col = SDL_MapRGB( display->format, 0xB8, 0xB8, 0xB8 );
+	sel_col = SDL_MapRGB( display->format, 0xFF, 0xFF, 0x00 );
+	sel_bg = SDL_MapRGB( display->format, 0x2E, 0x2E, 0x5E );
+	help_col = SDL_MapRGB( display->format, 0x88, 0x88, 0x88 );
+	
+	x0 = 8;
+	y0 = 8;
+	DrawString( display, x0, y0, "Bookmarks", title_col );
+	y0 += 22;
+	DrawString( display, x0, y0, "a:add x:del Enter:go", help_col );
+	y0 += 20;
+	line_h = 16;
+	max_lines = (display->h - y0) / line_h;
+	if (max_lines <= 0)
+		return;
+	
+	if (g_bm_view_count <= 0)
+	{
+		DrawString( display, x0, y0, "No bookmarks", entry_col );
+		return;
+	}
+	
+	start = 0;
+	if (g_bm_view_count > max_lines)
+	{
+		start = g_bm_sel - max_lines + 1;
+		if (start < 0)
+			start = 0;
+		if (start + max_lines > g_bm_view_count)
+			start = g_bm_view_count - max_lines;
+	}
+	
+	for (i = start; i < g_bm_view_count && i < start + max_lines; i++)
+	{
+		Bookmark	*bm = &g_bookmarks[g_bm_view[i]];
+		int		y = y0 + (i - start) * line_h;
+		
+		if (i == g_bm_sel)
+		{
+			hl.x = 0;
+			hl.y = y;
+			hl.w = panel_w;
+			hl.h = line_h;
+			SDL_FillRect( display, &hl, sel_bg );
+		}
+		
+		snprintf( buf, sizeof( buf ), "Page %d", bm->page + 1 );
+		DrawString( display, x0, y, buf, i == g_bm_sel ? sel_col : entry_col );
+	}
+	
+	return;
+}
+
+static RState	BookmarkInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
+{
+	switch (event->key.keysym.sym)
+	{
+		case SDLK_b:
+		case SDLK_ESCAPE:
+			g_bm_active = false;
+			*flags |= FLAG_RENDER;
+			return NORMAL;
+		case SDLK_j:
+		case SDLK_DOWN:
+			if (g_bm_view_count > 0 && g_bm_sel < g_bm_view_count - 1)
+				g_bm_sel++;
+			*flags |= FLAG_RENDER;
+			break;
+		case SDLK_k:
+		case SDLK_UP:
+			if (g_bm_view_count > 0 && g_bm_sel > 0)
+				g_bm_sel--;
+			*flags |= FLAG_RENDER;
+			break;
+		case SDLK_a:
+		case SDLK_PLUS:
+			if (AddBookmark( rtd ))
+				*flags |= FLAG_RENDER;
+			break;
+		case SDLK_x:
+		case SDLK_DELETE:
+		case SDLK_BACKSPACE:
+			if (g_bm_view_count > 0 && RemoveBookmarkAt( rtd, g_bm_view[g_bm_sel] ))
+				*flags |= FLAG_RENDER;
+			break;
+		case SDLK_RETURN:
+			if (g_bm_view_count > 0 && Green_IsDocValid( rtd, rtd->doc_cur ))
+			{
+				Bookmark	*bm = &g_bookmarks[g_bm_view[g_bm_sel]];
+				
+				if (Green_GotoPage( rtd->docs[rtd->doc_cur], bm->page, true ))
+				{
+					g_bm_active = false;
+					*flags |= FLAG_RENDER;
+					return NORMAL;
+				}
+			}
+			break;
+		default:
+			break;
+	}
+	
+	return BOOKMARKS;
+}
+
 void	Render( Green_RTD *rtd )
 {
 	Green_Document	*doc;
@@ -1120,8 +1643,82 @@ void	Render( Green_RTD *rtd )
 	// Render table of contents panel if active
 	RenderTOC( display, rtd );
 	
+	// Render bookmarks panel if active
+	RenderBookmarks( display, rtd );
+	
 	SDL_UpdateRect( display, 0, 0, 0, 0 );
+	g_force_final = false;
 	return;
+}
+
+static void	CloseCurrentFile( Green_RTD *rtd, unsigned short *flags )
+{
+	int	i, any = 0;
+	
+	if (Green_IsDocValid( rtd, rtd->doc_cur ))
+		Green_Close( rtd, rtd->doc_cur );
+	
+	for (i = 0; i < rtd->doc_count; i++)
+		if (rtd->docs[i])
+		{
+			any = 1;
+			break;
+		}
+	
+	if (!any)
+		*flags |= FLAG_QUIT;
+	else
+	{
+		Green_NextVaildDoc( rtd );
+		*flags |= FLAG_RENDER;
+	}
+	return;
+}
+
+static void	SkipPages( Green_Document *doc, Green_RTD *rtd, int delta, unsigned short *flags )
+{
+	int	page;
+	
+	if (!doc)
+		return;
+	
+	page = doc->page_cur + delta;
+	if (page < 0)
+		page = 0;
+	else if (page >= doc->page_count)
+		page = doc->page_count - 1;
+	
+	if (page == doc->page_cur)
+		return;
+	
+	if (Green_GotoPage( doc, page, true ))
+		*flags |= FLAG_RENDER;
+	return;
+}
+
+static RState	OpenTOCPanel( Green_RTD *rtd, unsigned short *flags )
+{
+	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
+		return NORMAL;
+	
+	g_bm_active = false;
+	EnsureTOC( rtd );
+	g_toc_active = true;
+	*flags |= FLAG_RENDER;
+	return TOC;
+}
+
+static RState	OpenBookmarksPanel( Green_RTD *rtd, unsigned short *flags )
+{
+	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
+		return NORMAL;
+	
+	LoadBookmarks();
+	g_toc_active = false;
+	RebuildBookmarkView( rtd );
+	g_bm_active = true;
+	*flags |= FLAG_RENDER;
+	return BOOKMARKS;
 }
 
 RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
@@ -1130,18 +1727,69 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 	SDL_Surface	*display = SDL_GetVideoSurface();
 	RState	state = NORMAL;
 	int	f = 0, vw = ViewWidth( rtd );
+	SDLKey	sym = event->key.keysym.sym;
 	
 	if (Green_IsDocValid( rtd, rtd->doc_cur ))
 		doc = rtd->docs[rtd->doc_cur];
 	
-	switch (event->key.keysym.sym)
+	/* Select held: A/B/X/Y are chords; other keys still work but cancel tap-open */
+	if (g_select_held)
+	{
+		switch (sym)
+		{
+			case SDLK_SPACE:
+				/* Select+A: night mode */
+				g_select_chord = true;
+				rtd->night = !rtd->night;
+				*flags |= FLAG_RENDER;
+				return NORMAL;
+			case SDLK_LCTRL:
+				/* Select+B: toggle bookmark */
+				g_select_chord = true;
+				if (doc)
+				{
+					LoadBookmarks();
+					ToggleBookmark( rtd );
+					*flags |= FLAG_RENDER;
+				}
+				return NORMAL;
+			case SDLK_LSHIFT:
+				/* Select+X: mirror horizontally */
+				g_select_chord = true;
+				g_x_held = true;
+				g_x_chord = true;
+				if (doc)
+				{
+					Green_MirrorH( doc );
+					*flags |= FLAG_RENDER;
+				}
+				return NORMAL;
+			case SDLK_LALT:
+				/* Select+Y: mirror vertically */
+				g_select_chord = true;
+				g_y_held = true;
+				g_y_chord = true;
+				if (doc)
+				{
+					Green_MirrorV( doc );
+					*flags |= FLAG_RENDER;
+				}
+				return NORMAL;
+			case SDLK_RCTRL:
+				return NORMAL;
+			default:
+				g_select_chord = true;
+				break;
+		}
+	}
+	
+	switch (sym)
 	{
 		case 'q':
 			*flags |= FLAG_QUIT;
 			break;
 		case 'c':
-			Green_Close( rtd, rtd->doc_cur );
-			*flags |= FLAG_RENDER;
+			CloseCurrentFile( rtd, flags );
 			break;
 		case 'g':
 			state = GOTO;
@@ -1316,6 +1964,67 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 			Green_Zoom( doc, vw, display->h, doc->finescale / rtd->zoomstep );
 			*flags |= FLAG_RENDER;
 			break;
+		case SDLK_SPACE:
+			/* A on Miyoo Mini: fit width */
+			if (!doc)
+				break;
+			
+			doc->fit_method = WIDTH;
+			doc->finescale = 1;
+			doc->xoffset = 0;
+			doc->yoffset = 0;
+			*flags |= FLAG_RENDER;
+			break;
+		case SDLK_LCTRL:
+			/* B on Miyoo Mini: rotate 90° */
+			if (!doc)
+				break;
+			
+			Green_RotateRight( doc );
+			Green_ValidateOffset( doc, display->w, display->h );
+			*flags |= FLAG_RENDER;
+			break;
+		case 'e':
+			/* L1 on Miyoo Mini: previous page */
+			if (!doc)
+				break;
+			
+			if (rtd->side_by_side)
+			{
+				if (!Green_GotoPage( doc, doc->page_cur - 2, true ))
+					break;
+			}
+			else if (!Green_GotoPage( doc, doc->page_cur - 1, true ))
+				break;
+			
+			*flags |= FLAG_RENDER;
+			break;
+		case 't':
+			/* R1 on Miyoo Mini: next page */
+			if (!doc)
+				break;
+			
+			if (rtd->side_by_side)
+			{
+				if (!Green_GotoPage( doc, doc->page_cur + 2, true ))
+					break;
+			}
+			else if (!Green_GotoPage( doc, doc->page_cur + 1, true ))
+				break;
+			
+			*flags |= FLAG_RENDER;
+			break;
+		case SDLK_TAB:
+			/* L2 on Miyoo Mini: back 10 pages */
+			SkipPages( doc, rtd, -10, flags );
+			break;
+		case SDLK_BACKSPACE:
+			/* R2 on Miyoo Mini: forward 10 pages */
+			SkipPages( doc, rtd, 10, flags );
+			break;
+		case SDLK_RETURN:
+			/* Start on Miyoo Mini: table of contents */
+			return OpenTOCPanel( rtd, flags );
 		case SDLK_F12:
 			f++;
 		case SDLK_F11:
@@ -1345,15 +2054,23 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 			rtd->doc_cur = f;
 			*flags |= FLAG_RENDER;
 			break;
-		case SDLK_TAB:
+		case 'o':
+			/* Table of contents (also Start on Miyoo Mini) */
+			return OpenTOCPanel( rtd, flags );
+		case SDLK_b:
 			if (!doc)
 				break;
 			
-			EnsureTOC( rtd );
-			g_toc_active = true;
-			state = TOC;
-			*flags |= FLAG_RENDER;
-			break;
+			LoadBookmarks();
+			if (event->key.keysym.mod & (KMOD_LSHIFT | KMOD_RSHIFT))
+			{
+				/* Shift+b: toggle bookmark (also Select+B on Miyoo) */
+				ToggleBookmark( rtd );
+				*flags |= FLAG_RENDER;
+				break;
+			}
+			
+			return OpenBookmarksPanel( rtd, flags );
 		case SDLK_d:
 			rtd->side_by_side = !rtd->side_by_side;
 			*flags |= FLAG_RENDER;
@@ -1429,6 +2146,8 @@ int	Green_SDL_Main( Green_RTD *rtd )
 	if (!rtd->mouse.visibility)
 		SDL_ShowCursor( SDL_DISABLE );
 	
+	LoadBookmarks();
+	
 	do
 	{
 		if (flags&FLAG_RENDER)
@@ -1452,19 +2171,112 @@ int	Green_SDL_Main( Green_RTD *rtd )
 				case SDL_QUIT:
 					flags |= FLAG_QUIT;
 					break;
-				case SDL_KEYDOWN:
-					if (event.key.keysym.sym == SDLK_ESCAPE)
+				case SDL_KEYUP:
+					if (event.key.keysym.sym == SDLK_RCTRL)
 					{
-						g_state = NORMAL;
-						if (g_toc_active)
+						/* Select release: open bookmarks if no chord was used */
+						if (g_select_held && !g_select_chord
+							&& g_state == NORMAL && !g_toc_active && !g_bm_active)
+							g_state = OpenBookmarksPanel( rtd, &flags );
+						g_select_held = false;
+						g_select_chord = false;
+					}
+					else if (event.key.keysym.sym == SDLK_LSHIFT)
+					{
+						/* X tap: zoom in (skipped if used as Shift modifier / chord) */
+						if (g_x_held && !g_x_chord && g_state == NORMAL
+							&& Green_IsDocValid( rtd, rtd->doc_cur ))
 						{
-							g_toc_active = false;
+							Green_Document	*d = rtd->docs[rtd->doc_cur];
+							
+							Green_Zoom( d, ViewWidth( rtd ), display->h,
+								d->finescale * rtd->zoomstep );
 							flags |= FLAG_RENDER;
 						}
+						g_x_held = false;
+						g_x_chord = false;
+					}
+					else if (event.key.keysym.sym == SDLK_LALT)
+					{
+						/* Y tap: zoom out */
+						if (g_y_held && !g_y_chord && g_state == NORMAL
+							&& Green_IsDocValid( rtd, rtd->doc_cur ))
+						{
+							Green_Document	*d = rtd->docs[rtd->doc_cur];
+							
+							Green_Zoom( d, ViewWidth( rtd ), display->h,
+								d->finescale / rtd->zoomstep );
+							flags |= FLAG_RENDER;
+						}
+						g_y_held = false;
+						g_y_chord = false;
+					}
+					break;
+				case SDL_KEYDOWN:
+					if (event.key.keysym.sym == SDLK_RCTRL
+						&& g_state == NORMAL && !g_toc_active && !g_bm_active)
+					{
+						/* Select press: wait for chord or release */
+						g_select_held = true;
+						g_select_chord = false;
+						break;
+					}
+					
+					if (event.key.keysym.sym == SDLK_LSHIFT
+						&& g_state == NORMAL && !g_select_held)
+					{
+						g_x_held = true;
+						g_x_chord = false;
+						break;
+					}
+					
+					if (event.key.keysym.sym == SDLK_LALT
+						&& g_state == NORMAL && !g_select_held)
+					{
+						g_y_held = true;
+						g_y_chord = false;
+						break;
+					}
+					
+					/* Another key while X/Y held => treat as keyboard modifier, not zoom */
+					if (g_x_held && event.key.keysym.sym != SDLK_LSHIFT)
+						g_x_chord = true;
+					if (g_y_held && event.key.keysym.sym != SDLK_LALT)
+						g_y_chord = true;
+					
+					if (event.key.keysym.sym == SDLK_ESCAPE
+						|| event.key.keysym.sym == SDLK_HOME)
+					{
+						g_select_held = false;
+						g_select_chord = false;
+						g_x_held = false;
+						g_x_chord = false;
+						g_y_held = false;
+						g_y_chord = false;
+						/* Menu on Miyoo Mini: leave overlays, else close file */
+						if (g_state != NORMAL || g_toc_active || g_bm_active)
+						{
+							g_state = NORMAL;
+							if (g_toc_active)
+							{
+								g_toc_active = false;
+								flags |= FLAG_RENDER;
+							}
+							if (g_bm_active)
+							{
+								g_bm_active = false;
+								flags |= FLAG_RENDER;
+							}
+						}
+						else
+							CloseCurrentFile( rtd, &flags );
 					}
 					else if (g_state == TOC)
 						g_state = TOCInput( rtd, &event, &flags );
-					else if (event.key.keysym.sym == SDLK_RETURN)
+					else if (g_state == BOOKMARKS)
+						g_state = BookmarkInput( rtd, &event, &flags );
+					else if (event.key.keysym.sym == SDLK_RETURN
+						&& (g_state == GOTO || g_state == SEARCH))
 					{
 						if (!Green_IsDocValid( rtd, rtd->doc_cur ))
 							break;
@@ -1657,6 +2469,13 @@ int	Green_SDL_Main( Green_RTD *rtd )
 					if (g_state == SEARCH || g_state == GOTO)
 						flags |= FLAG_RENDER;
 					
+					// Upgrade low-res preview to screen-capped final quality
+					if (g_refine_page >= 0)
+					{
+						g_force_final = true;
+						flags |= FLAG_RENDER;
+					}
+					
 					if (rtd->mouse.visibility > 0)
 					{
 						mouse_cur = SDL_GetTicks();
@@ -1700,6 +2519,7 @@ int	Green_SDL_Main( Green_RTD *rtd )
 		
 	}	while (!(flags&FLAG_QUIT));
 	
+	Green_SaveAllLastPages( rtd );
 	SDL_RemoveTimer( timer );
 	SDL_Quit();
 	

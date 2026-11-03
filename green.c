@@ -21,6 +21,166 @@
 #include "green.h"
 
 
+typedef struct
+{
+	char	*uri;
+	int	page;
+		// 0-based
+}	LastPageEntry;
+
+static LastPageEntry	*g_last_pages = NULL;
+static int	g_last_page_count = 0;
+static bool	g_last_pages_loaded = false;
+
+
+static char	*LastPagesPath( void )
+{
+	static char	path[512];
+	const char	*home = getenv( "HOME" );
+	
+	if (!home || !*home)
+		return NULL;
+	if (snprintf( path, sizeof( path ), "%s/.green.pages", home ) >= (int)sizeof( path ))
+		return NULL;
+	return path;
+}
+
+static void	SaveLastPagesFile( void )
+{
+	FILE	*file;
+	char	*path = LastPagesPath();
+	int	i;
+	
+	if (!path)
+		return;
+	
+	file = fopen( path, "w" );
+	if (!file)
+		return;
+	
+	for (i = 0; i < g_last_page_count; i++)
+		fprintf( file, "%d %s\n", g_last_pages[i].page + 1, g_last_pages[i].uri );
+	
+	fclose( file );
+	return;
+}
+
+static void	LoadLastPagesFile( void )
+{
+	FILE	*file;
+	char	*path = LastPagesPath();
+	char	line[4096];
+	
+	if (g_last_pages_loaded)
+		return;
+	
+	g_last_pages_loaded = true;
+	if (!path)
+		return;
+	
+	file = fopen( path, "r" );
+	if (!file)
+		return;
+	
+	while (fgets( line, sizeof( line ), file ))
+	{
+		char	*uri, *end;
+		long	page;
+		LastPageEntry	*tmp;
+		
+		if (line[0] == '#' || line[0] == '\n')
+			continue;
+		
+		page = strtol( line, &uri, 10 );
+		if (uri == line || page < 1)
+			continue;
+		while (*uri == ' ' || *uri == '\t')
+			uri++;
+		end = uri + strlen( uri );
+		while (end > uri && (end[-1] == '\n' || end[-1] == '\r'))
+			*--end = 0;
+		if (!*uri)
+			continue;
+		
+		tmp = realloc( g_last_pages, (g_last_page_count + 1) * sizeof( *g_last_pages ) );
+		if (!tmp)
+			break;
+		g_last_pages = tmp;
+		g_last_pages[g_last_page_count].uri = strdup( uri );
+		if (!g_last_pages[g_last_page_count].uri)
+			break;
+		g_last_pages[g_last_page_count].page = (int)page - 1;
+		g_last_page_count++;
+	}
+	
+	fclose( file );
+	return;
+}
+
+static int	FindLastPageEntry( const char *uri )
+{
+	int	i;
+	
+	for (i = 0; i < g_last_page_count; i++)
+		if (!strcmp( g_last_pages[i].uri, uri ))
+			return i;
+	return -1;
+}
+
+static void	StoreLastPage( Green_Document *doc, bool flush )
+{
+	LastPageEntry	*tmp;
+	char		*uri;
+	int		idx;
+	
+	if (!doc || !doc->uri)
+		return;
+	
+	LoadLastPagesFile();
+	idx = FindLastPageEntry( doc->uri );
+	if (idx >= 0)
+		g_last_pages[idx].page = doc->page_cur;
+	else
+	{
+		uri = strdup( doc->uri );
+		if (!uri)
+			return;
+		
+		tmp = realloc( g_last_pages, (g_last_page_count + 1) * sizeof( *g_last_pages ) );
+		if (!tmp)
+		{
+			free( uri );
+			return;
+		}
+		
+		g_last_pages = tmp;
+		g_last_pages[g_last_page_count].uri = uri;
+		g_last_pages[g_last_page_count].page = doc->page_cur;
+		g_last_page_count++;
+	}
+	
+	if (flush)
+		SaveLastPagesFile();
+	return;
+}
+
+static void	RestoreLastPage( Green_Document *doc )
+{
+	int	idx;
+	
+	if (!doc || !doc->uri)
+		return;
+	
+	LoadLastPagesFile();
+	idx = FindLastPageEntry( doc->uri );
+	if (idx < 0)
+		return;
+	
+	if (g_last_pages[idx].page >= 0 && g_last_pages[idx].page < doc->page_count)
+		doc->page_cur = g_last_pages[idx].page;
+	return;
+}
+
 char*	FilenameToURI( char *filename )
 {
 	const char	*prefix = "file:";
@@ -106,7 +266,10 @@ int	Green_Open( Green_RTD *rtd, char *uri )
 	doc->bb = rtd->bb;
 	doc->cache.page = -1;
 	doc->cache.tscale = 0;
+	doc->cache.render_scale = 0;
+	doc->cache.quality = 0;
 	doc->cache.surface = NULL;
+	RestoreLastPage( doc );
 	for (i = 0; i < rtd->doc_count; i++)
 	{
 		if (rtd->docs[i])
@@ -134,14 +297,20 @@ int	Green_Open( Green_RTD *rtd, char *uri )
 
 void	Green_Close( Green_RTD *rtd, int id )
 {
+	Green_Document	*doc;
 	int	n;
 	
 	if (id < 0 || id >= rtd->doc_count || !rtd->docs[id])
 		return;
 	
-	g_object_unref( G_OBJECT( rtd->docs[id]->doc ) );
-	free( rtd->docs[id]->search_str );
-	free( rtd->docs[id] );
+	doc = rtd->docs[id];
+	StoreLastPage( doc, true );
+	g_object_unref( G_OBJECT( doc->doc ) );
+	if (doc->cache.surface)
+		cairo_surface_destroy( doc->cache.surface );
+	free( doc->search_str );
+	free( doc->uri );
+	free( doc );
 	rtd->docs[id] = NULL;
 	if (id < rtd->doc_count - 1)
 		return;
@@ -149,6 +318,21 @@ void	Green_Close( Green_RTD *rtd, int id )
 	for (n = id; n > 0 && !rtd->docs[n-1]; n-- );
 	rtd->doc_count = n;
 	rtd->docs = realloc( rtd->docs, n * sizeof( *rtd->docs ) );
+	return;
+}
+
+void	Green_SaveAllLastPages( Green_RTD *rtd )
+{
+	int	i;
+	
+	if (!rtd)
+		return;
+	
+	for (i = 0; i < rtd->doc_count; i++)
+		if (rtd->docs[i])
+			StoreLastPage( rtd->docs[i], false );
+	
+	SaveLastPagesFile();
 	return;
 }
 
