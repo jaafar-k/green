@@ -14,6 +14,8 @@ CONFIG	:=	-D GREEN_SYSCONFIG_FILE=\"$(SYSCONFDIR)/green.conf\" -D GREEN_USERCONF
 
 POPPLER_CFLAGS	:=	$$(pkg-config poppler-glib --cflags)
 POPPLER_LIBS	:=	$$(pkg-config poppler-glib --libs)
+PANGO_CFLAGS	:=	$$(pkg-config pangocairo --cflags)
+PANGO_LIBS	:=	$$(pkg-config pangocairo --libs)
 SDL_CFLAGS	:=	$$(sdl-config --cflags)
 SDL_LIBS	:=	$$(sdl-config --libs)
 
@@ -28,7 +30,7 @@ install: green
 	$(INSTALL) green.1 $(MANDIR)/man1/
 
 green: main.o green.o sdl.o
-	$(CC) $^ $(POPPLER_LIBS) $(SDL_LIBS) -o $@
+	$(CC) $^ $(POPPLER_LIBS) $(PANGO_LIBS) $(SDL_LIBS) -o $@
 
 main.o: main.c green.h
 	$(CC) $(CONFIG) $(CFLAGS) -c $< $(POPPLER_CFLAGS) -o $@
@@ -37,4 +39,4 @@ green.o: green.c green.h
 	$(CC) $(CFLAGS) -c $< $(POPPLER_CFLAGS) -o $@
 
 sdl.o: sdl.c green.h
-	$(CC) $(CFLAGS) -c $< $(POPPLER_CFLAGS) $(SDL_CFLAGS) -o $@
+	$(CC) $(CFLAGS) -c $< $(POPPLER_CFLAGS) $(PANGO_CFLAGS) $(SDL_CFLAGS) -o $@
