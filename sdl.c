@@ -106,6 +106,11 @@ static SDL_Surface	*g_screen = NULL;
 static SDL_Surface	*g_monitor = NULL;
 static int	g_rotate180 = 0;
 
+/* Brief top-right status toast (e.g. bookmark toggle) */
+static char	g_toast_msg[32];
+static Uint32	g_toast_until = 0;
+#define TOAST_MS	3000
+
 static int	ViewWidth( Green_RTD *rtd );
 
 static int	IsMiyoo( void )
@@ -749,6 +754,42 @@ void DrawString( SDL_Surface *display, int x, int y, const char *str, Uint32 col
 	{
 		DrawChar( display, x + i * char_width, y, str[i], color );
 	}
+}
+
+static void	ShowToast( const char *msg )
+{
+	strncpy( g_toast_msg, msg, sizeof( g_toast_msg ) - 1 );
+	g_toast_msg[sizeof( g_toast_msg ) - 1] = 0;
+	g_toast_until = SDL_GetTicks() + TOAST_MS;
+}
+
+static void	RenderToast( SDL_Surface *display )
+{
+	SDL_Rect	box;
+	int		char_width = 12, pad = 8, text_w, text_h = 14;
+	Uint32		bg, fg;
+	
+	if (!g_toast_until)
+		return;
+	if (SDL_GetTicks() >= g_toast_until)
+	{
+		g_toast_until = 0;
+		g_toast_msg[0] = 0;
+		return;
+	}
+	
+	text_w = (int)strlen( g_toast_msg ) * char_width;
+	box.w = text_w + pad * 2;
+	box.h = text_h + pad * 2;
+	box.x = display->w - box.w - 8;
+	box.y = 8;
+	if (box.x < 0)
+		box.x = 0;
+	
+	bg = SDL_MapRGB( display->format, 0x20, 0x20, 0x28 );
+	fg = SDL_MapRGB( display->format, 0xFF, 0xFF, 0xCC );
+	SDL_FillRect( display, &box, bg );
+	DrawString( display, box.x + pad, box.y + pad, g_toast_msg, fg );
 }
 
 void	RenderSearchBox( SDL_Surface *display, IBuffer *input, RState state )
@@ -1460,8 +1501,20 @@ static int	ToggleBookmark( Green_RTD *rtd )
 	doc = rtd->docs[rtd->doc_cur];
 	idx = FindBookmark( doc->uri, doc->page_cur );
 	if (idx >= 0)
-		return RemoveBookmarkAt( rtd, idx );
-	return AddBookmark( rtd );
+	{
+		if (RemoveBookmarkAt( rtd, idx ))
+		{
+			ShowToast( "Bookmark Removed" );
+			return 1;
+		}
+		return 0;
+	}
+	if (AddBookmark( rtd ))
+	{
+		ShowToast( "Bookmark Added" );
+		return 1;
+	}
+	return 0;
 }
 
 static void	RenderBookmarks( SDL_Surface *display, Green_RTD *rtd )
@@ -1700,6 +1753,8 @@ void	Render( Green_RTD *rtd )
 	
 	// Render bookmarks panel if active
 	RenderBookmarks( display, rtd );
+	
+	RenderToast( display );
 	
 	Present();
 	g_force_final = false;
@@ -2563,6 +2618,14 @@ int	Green_SDL_Main( Green_RTD *rtd )
 					// Force render if in search or goto mode for cursor blinking
 					if (g_state == SEARCH || g_state == GOTO)
 						flags |= FLAG_RENDER;
+					
+					/* Keep redrawing while toast is up so it clears after TOAST_MS */
+					if (g_toast_until)
+					{
+						if (SDL_GetTicks() >= g_toast_until)
+							g_toast_until = 0;
+						flags |= FLAG_RENDER;
+					}
 					
 					// Upgrade low-res preview to screen-capped final quality
 					if (g_refine_page >= 0)
