@@ -194,10 +194,6 @@ This fork adds the following on top of the original `green`:
    with `Shift+b`, add/delete from the panel with `a`/`x`.
  - **Last page restore**: remembers the current page per document in
    `~/.green.pages` and jumps back there when the file is opened again.
- - **Fast page display on weak devices**: page rasters are capped to the
-   screen/pane size (no oversized bitmaps), and single-page mode shows a
-   1/4-scale preview immediately, then refines to full screen quality on
-   the next idle tick.
  - **Miyoo Mini controls**: handheld mapping with Select chords (tap Select =
    bookmarks, Start = TOC, Select+A/B/X/Y = night / bookmark / mirrors).
 

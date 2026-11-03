@@ -41,11 +41,6 @@ typedef struct
 {
 	int	page;
 	double	tscale;
-		// logical scale requested by the viewer
-	double	render_scale;
-		// actual cairo scale used for the cached surface
-	unsigned char	quality;
-		// 0: empty, 1: low-res preview, 2: final
 	cairo_surface_t	*surface;
 	
 }	Green_PageBuffer;

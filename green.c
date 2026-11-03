@@ -266,8 +266,6 @@ int	Green_Open( Green_RTD *rtd, char *uri )
 	doc->bb = rtd->bb;
 	doc->cache.page = -1;
 	doc->cache.tscale = 0;
-	doc->cache.render_scale = 0;
-	doc->cache.quality = 0;
 	doc->cache.surface = NULL;
 	RestoreLastPage( doc );
 	for (i = 0; i < rtd->doc_count; i++)
