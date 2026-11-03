@@ -1,8 +1,20 @@
-# Miyoo Mini / Onion OS package
+# Miyoo Mini / Onion OS packages
+
+## Small drop-in (recommended)
+
+**Artifact:** [`green-onion-dropin.zip`](./green-onion-dropin.zip) (~24 KB)
+
+Onion-style App launcher + ARM `green` binary only (uses device Parasyte libs).
+
+1. Copy `1_RESTORE_App_Green/*` → `/mnt/SDCARD/App/Green/`
+2. Copy `2_REPLACE_tmp_update_bin_green/green` → `/mnt/SDCARD/.tmp_update/bin/green/green`
+3. PDFs in `/mnt/SDCARD/Media/PDF/`
+
+## Full standalone package
 
 **Artifact:** [`green-onion-miyoo.zip`](./green-onion-miyoo.zip) (~75 MB)
 
-Cross-compiled ARM build of this repo’s `green` (bookmarks, last-page restore, preview rendering, Miyoo controls), packaged like Steward Fu’s Miyoo green app.
+Cross-compiled ARM build of this repo’s `green` (bookmarks, last-page restore, preview rendering, Miyoo controls), packaged like Steward Fu’s Miyoo green app with bundled libs/fonts.
 
 ## Install
 
