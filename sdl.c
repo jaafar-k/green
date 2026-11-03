@@ -101,7 +101,49 @@ static bool	g_x_chord = false;
 static bool	g_y_held = false;
 static bool	g_y_chord = false;
 
+/* Miyoo Mini panel is mounted 180°; draw upright then present rotated (Steward) */
+static SDL_Surface	*g_screen = NULL;
+static SDL_Surface	*g_monitor = NULL;
+static int	g_rotate180 = 0;
+
 static int	ViewWidth( Green_RTD *rtd );
+
+static int	IsMiyoo( void )
+{
+	return access( "/mnt/SDCARD", F_OK ) == 0
+		|| access( "/customer", F_OK ) == 0;
+}
+
+static SDL_Surface	*DrawSurface( void )
+{
+	if (g_screen)
+		return g_screen;
+	return SDL_GetVideoSurface();
+}
+
+/* Copy upright backbuffer to the physical panel with 180° rotation */
+static void	Present( void )
+{
+	int	x, y, w, h, sp, dp;
+	Uint32	*s, *d;
+	
+	if (!g_rotate180 || !g_screen || !g_monitor)
+	{
+		SDL_UpdateRect( SDL_GetVideoSurface(), 0, 0, 0, 0 );
+		return;
+	}
+	
+	w = g_screen->w;
+	h = g_screen->h;
+	sp = g_screen->pitch / 4;
+	dp = g_monitor->pitch / 4;
+	s = (Uint32 *)g_screen->pixels;
+	d = (Uint32 *)g_monitor->pixels;
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++)
+			d[(h - 1 - y) * dp + (w - 1 - x)] = s[y * sp + x];
+	SDL_Flip( g_monitor );
+}
 
 // Simple 5x7 bitmap font for basic ASCII characters (32-126)
 // Each character is represented by 7 bytes, one per row
@@ -387,7 +429,7 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 {
 	PopplerRectangle	*rect;
 	Green_Document	*doc = rtd->docs[rtd->doc_cur];
-	SDL_Surface	*display = SDL_GetVideoSurface();
+	SDL_Surface	*display = DrawSurface();
 	SDL_PixelFormat	fmt = *display->format;
 	cairo_surface_t	*surface;
 	void	*pixels;
@@ -775,7 +817,7 @@ void	RenderSearchBox( SDL_Surface *display, IBuffer *input, RState state )
 
 static int	ViewWidth( Green_RTD *rtd )
 {
-	SDL_Surface	*display = SDL_GetVideoSurface();
+	SDL_Surface	*display = DrawSurface();
 	
 	if (rtd->side_by_side && Green_IsDocValid( rtd, rtd->doc_cur )
 		&& rtd->docs[rtd->doc_cur]->page_count > 1)
@@ -1168,6 +1210,12 @@ static RState	TOCInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags 
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_RETURN:
+			/* Start toggles TOC closed */
+			g_toc_active = false;
+			*flags |= FLAG_RENDER;
+			return NORMAL;
+		case SDLK_SPACE:
+			/* A on Miyoo: jump to selection */
 			if (g_toc_count > 0)
 			{
 				if (TOCGoToPage( rtd, g_toc_entries[g_toc_sel].node, flags ))
@@ -1448,7 +1496,7 @@ static void	RenderBookmarks( SDL_Surface *display, Green_RTD *rtd )
 	y0 = 8;
 	DrawString( display, x0, y0, "Bookmarks", title_col );
 	y0 += 22;
-	DrawString( display, x0, y0, "a:add x:del Enter:go", help_col );
+	DrawString( display, x0, y0, "a:add x:del A:go", help_col );
 	y0 += 20;
 	line_h = 16;
 	max_lines = (display->h - y0) / line_h;
@@ -1513,7 +1561,7 @@ static RState	BookmarkInput( Green_RTD *rtd, SDL_Event *event, unsigned short *f
 				g_bm_sel--;
 			*flags |= FLAG_RENDER;
 			break;
-		case SDLK_a:
+		case 'a':
 		case SDLK_PLUS:
 			if (AddBookmark( rtd ))
 				*flags |= FLAG_RENDER;
@@ -1525,6 +1573,11 @@ static RState	BookmarkInput( Green_RTD *rtd, SDL_Event *event, unsigned short *f
 				*flags |= FLAG_RENDER;
 			break;
 		case SDLK_RETURN:
+			/* Start: leave bookmarks and toggle TOC */
+			g_bm_active = false;
+			return OpenTOCPanel( rtd, flags );
+		case SDLK_SPACE:
+			/* A on Miyoo: jump to selection */
 			if (g_bm_view_count > 0 && Green_IsDocValid( rtd, rtd->doc_cur ))
 			{
 				Bookmark	*bm = &g_bookmarks[g_bm_view[g_bm_sel]];
@@ -1548,7 +1601,7 @@ void	Render( Green_RTD *rtd )
 {
 	Green_Document	*doc;
 	PopplerPage	*page = NULL;
-	SDL_Surface	*display = SDL_GetVideoSurface();
+	SDL_Surface	*display = DrawSurface();
 	SDL_Rect	rect;
 	double	tscale;
 	int	w, h, w2, h2;
@@ -1562,7 +1615,7 @@ void	Render( Green_RTD *rtd )
 		SDL_FillRect( display, &rect, SDL_MapRGB( display->format, rtd->c_background.r, rtd->c_background.g, rtd->c_background.b ));
 	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
 	{
-		SDL_UpdateRect( display, 0, 0, 0, 0 );
+		Present();
 		return;
 	}
 	
@@ -1646,7 +1699,7 @@ void	Render( Green_RTD *rtd )
 	// Render bookmarks panel if active
 	RenderBookmarks( display, rtd );
 	
-	SDL_UpdateRect( display, 0, 0, 0, 0 );
+	Present();
 	g_force_final = false;
 	return;
 }
@@ -1698,6 +1751,14 @@ static void	SkipPages( Green_Document *doc, Green_RTD *rtd, int delta, unsigned 
 
 static RState	OpenTOCPanel( Green_RTD *rtd, unsigned short *flags )
 {
+	/* Start / o: toggle TOC */
+	if (g_toc_active)
+	{
+		g_toc_active = false;
+		*flags |= FLAG_RENDER;
+		return NORMAL;
+	}
+	
 	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
 		return NORMAL;
 	
@@ -1710,6 +1771,14 @@ static RState	OpenTOCPanel( Green_RTD *rtd, unsigned short *flags )
 
 static RState	OpenBookmarksPanel( Green_RTD *rtd, unsigned short *flags )
 {
+	/* Select release / b: toggle bookmarks */
+	if (g_bm_active)
+	{
+		g_bm_active = false;
+		*flags |= FLAG_RENDER;
+		return NORMAL;
+	}
+	
 	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
 		return NORMAL;
 	
@@ -1724,7 +1793,7 @@ static RState	OpenBookmarksPanel( Green_RTD *rtd, unsigned short *flags )
 RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 {
 	Green_Document	*doc = NULL;
-	SDL_Surface	*display = SDL_GetVideoSurface();
+	SDL_Surface	*display = DrawSurface();
 	RState	state = NORMAL;
 	int	f = 0, vw = ViewWidth( rtd );
 	SDLKey	sym = event->key.keysym.sym;
@@ -2130,8 +2199,24 @@ int	Green_SDL_Main( Green_RTD *rtd )
 	}
 	
 	SDL_WM_SetCaption( "green - the PDF reader", NULL );
-	display = SDL_SetVideoMode( rtd->width, rtd->height, 0, SDL_SWSURFACE | SDL_ANYFORMAT | SDL_RESIZABLE | (rtd->flags&GREEN_FULLSCREEN ? SDL_FULLSCREEN : 0) );
-	if (!display)
+	
+	/* Miyoo: fixed 640x480 panel, draw to offscreen then blit 180° like Steward */
+	g_rotate180 = IsMiyoo();
+	if (g_rotate180)
+	{
+		if (rtd->width <= 0)
+			rtd->width = 640;
+		if (rtd->height <= 0)
+			rtd->height = 480;
+		g_monitor = SDL_SetVideoMode( 640, 480, 32, SDL_SWSURFACE );
+		g_screen = SDL_CreateRGBSurface( SDL_SWSURFACE, rtd->width, rtd->height, 32, 0, 0, 0, 0 );
+		display = g_screen;
+	}
+	else
+	{
+		display = SDL_SetVideoMode( rtd->width, rtd->height, 0, SDL_SWSURFACE | SDL_ANYFORMAT | SDL_RESIZABLE | (rtd->flags&GREEN_FULLSCREEN ? SDL_FULLSCREEN : 0) );
+	}
+	if (!display || (g_rotate180 && !g_monitor))
 	{
 		SDL_Quit();
 		fprintf( stderr, "SDL_SetVideoMode failed: %s\n", SDL_GetError() );
@@ -2180,9 +2265,9 @@ int	Green_SDL_Main( Green_RTD *rtd )
 				case SDL_KEYUP:
 					if (event.key.keysym.sym == SDLK_RCTRL)
 					{
-						/* Select release: open bookmarks if no chord was used */
+						/* Select release: toggle bookmarks if no chord was used */
 						if (g_select_held && !g_select_chord
-							&& g_state == NORMAL && !g_toc_active && !g_bm_active)
+							&& (g_state == NORMAL || g_state == BOOKMARKS || g_state == TOC))
 							g_state = OpenBookmarksPanel( rtd, &flags );
 						g_select_held = false;
 						g_select_chord = false;
@@ -2220,9 +2305,9 @@ int	Green_SDL_Main( Green_RTD *rtd )
 					break;
 				case SDL_KEYDOWN:
 					if (event.key.keysym.sym == SDLK_RCTRL
-						&& g_state == NORMAL && !g_toc_active && !g_bm_active)
+						&& (g_state == NORMAL || g_state == BOOKMARKS || g_state == TOC))
 					{
-						/* Select press: wait for chord or release */
+						/* Select press: wait for chord or release (toggle) */
 						g_select_held = true;
 						g_select_chord = false;
 						break;
@@ -2400,6 +2485,8 @@ int	Green_SDL_Main( Green_RTD *rtd )
 					
 					break;
 				case SDL_VIDEORESIZE:
+					if (g_rotate180)
+						break;
 					display = SDL_SetVideoMode( event.resize.w, event.resize.h, 0, SDL_HWSURFACE | SDL_ANYFORMAT | SDL_RESIZABLE );
 					if (!display)
 					{

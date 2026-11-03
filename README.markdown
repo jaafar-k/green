@@ -95,8 +95,9 @@ Miyoo buttons are exposed as SDL keys (Onion/MinUI). Mapped as:
 | Y | Zoom out |
 | L1 / R1 | Previous / next page |
 | L2 / R2 | Jump back / forward 10 pages |
-| Start | Table of contents |
-| Select (tap) | Bookmarks menu |
+| Start | Toggle table of contents |
+| Select (tap) | Toggle bookmarks menu |
+| A (in TOC/Bookmarks) | Jump to selection |
 | Select + A | Toggle night mode |
 | Select + B | Toggle bookmark on current page |
 | Select + X | Mirror horizontally |
