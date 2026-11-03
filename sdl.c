@@ -1540,6 +1540,8 @@ static void	RenderBookmarks( SDL_Surface *display, Green_RTD *rtd )
 	return;
 }
 
+static RState	OpenTOCPanel( Green_RTD *rtd, unsigned short *flags );
+
 static RState	BookmarkInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 {
 	switch (event->key.keysym.sym)
