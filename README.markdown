@@ -196,4 +196,6 @@ This fork adds the following on top of the original `green`:
    `~/.green.pages` and jumps back there when the file is opened again.
  - **Miyoo Mini controls**: handheld mapping with Select chords (tap Select =
    bookmarks, Start = TOC, Select+A/B/X/Y = night / bookmark / mirrors).
+ - **Arabic TOC**: table-of-contents titles render via Pango (UTF-8, shaping,
+   RTL) when a font such as DejaVu Sans is available to fontconfig.
 

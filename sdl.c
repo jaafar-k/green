@@ -20,6 +20,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <SDL.h>
+#include <pango/pangocairo.h>
 #include "green.h"
 
 
@@ -619,6 +620,120 @@ void DrawString( SDL_Surface *display, int x, int y, const char *str, Uint32 col
 	}
 }
 
+/* True if UTF-8 text contains Arabic / other strong RTL letters */
+static int	TextHasRtl( const char *s )
+{
+	const unsigned char	*p = (const unsigned char *)s;
+	
+	if (!p)
+		return 0;
+	while (*p)
+	{
+		unsigned int	cp;
+		
+		if (*p < 0x80)
+		{
+			p++;
+			continue;
+		}
+		if ((*p & 0xE0) == 0xC0 && p[1])
+		{
+			cp = ((*p & 0x1F) << 6) | (p[1] & 0x3F);
+			p += 2;
+		}
+		else if ((*p & 0xF0) == 0xE0 && p[1] && p[2])
+		{
+			cp = ((*p & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+			p += 3;
+		}
+		else if ((*p & 0xF8) == 0xF0 && p[1] && p[2] && p[3])
+		{
+			cp = ((*p & 0x07) << 18) | ((p[1] & 0x3F) << 12)
+				| ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+			p += 4;
+		}
+		else
+		{
+			p++;
+			continue;
+		}
+		/* Arabic, Arabic Supplement/Extended, Presentation Forms, Hebrew */
+		if ((cp >= 0x0590 && cp <= 0x08FF)
+			|| (cp >= 0xFB1D && cp <= 0xFDFF)
+			|| (cp >= 0xFE70 && cp <= 0xFEFF))
+			return 1;
+	}
+	return 0;
+}
+
+/* Draw UTF-8 (Arabic-capable) via Pango; max_w ellipsizes. Returns used height. */
+static int	DrawUtf8( SDL_Surface *display, int x, int y, int max_w, int line_h,
+	const char *utf8, Uint8 r, Uint8 g, Uint8 b )
+{
+	cairo_surface_t		*cs;
+	cairo_t			*cr;
+	PangoLayout		*layout;
+	PangoFontDescription	*desc;
+	unsigned char		*src;
+	int			stride, row, col, w, h;
+	
+	if (!utf8 || !*utf8 || max_w < 4 || line_h < 8)
+		return 0;
+	
+	w = max_w;
+	h = line_h;
+	cs = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, w, h );
+	if (cairo_surface_status( cs ) != CAIRO_STATUS_SUCCESS)
+		return 0;
+	
+	cr = cairo_create( cs );
+	layout = pango_cairo_create_layout( cr );
+	/* DejaVu covers Arabic; FreeSans / sans-serif as fallbacks */
+	desc = pango_font_description_from_string( "DejaVu Sans,FreeSans,sans-serif 11" );
+	pango_layout_set_font_description( layout, desc );
+	pango_font_description_free( desc );
+	pango_layout_set_text( layout, utf8, -1 );
+	pango_layout_set_width( layout, w * PANGO_SCALE );
+	pango_layout_set_height( layout, h * PANGO_SCALE );
+	pango_layout_set_ellipsize( layout, PANGO_ELLIPSIZE_END );
+	pango_layout_set_single_paragraph_mode( layout, TRUE );
+	if (TextHasRtl( utf8 ))
+		pango_context_set_base_dir( pango_layout_get_context( layout ), PANGO_DIRECTION_RTL );
+	
+	cairo_set_source_rgb( cr, r / 255.0, g / 255.0, b / 255.0 );
+	cairo_move_to( cr, 0, 0 );
+	pango_cairo_show_layout( cr, layout );
+	cairo_surface_flush( cs );
+	
+	src = cairo_image_surface_get_data( cs );
+	stride = cairo_image_surface_get_stride( cs );
+	for (row = 0; row < h; row++)
+	{
+		Uint32	*pix = (Uint32 *)(src + row * stride);
+		
+		for (col = 0; col < w; col++)
+		{
+			Uint32	p = pix[col];
+			Uint8	a = (p >> 24) & 0xFF;
+			SDL_Rect	pixel;
+			
+			if (a < 32)
+				continue;
+			pixel.x = x + col;
+			pixel.y = y + row;
+			pixel.w = 1;
+			pixel.h = 1;
+			if (pixel.x >= 0 && pixel.y >= 0 && pixel.x < display->w && pixel.y < display->h)
+				SDL_FillRect( display, &pixel, SDL_MapRGB( display->format, r, g, b ) );
+		}
+	}
+	
+	g_object_unref( layout );
+	cairo_destroy( cr );
+	cairo_surface_destroy( cs );
+	return h;
+}
+
 static void	ShowToast( const char *msg )
 {
 	strncpy( g_toast_msg, msg, sizeof( g_toast_msg ) - 1 );
@@ -918,15 +1033,14 @@ static void	RenderTOC( SDL_Surface *display, Green_RTD *rtd )
 {
 	SDL_Rect	panel, hl;
 	Uint32		title_col, entry_col, sel_col, sel_bg;
-	int		panel_w, x0, y0, line_h, max_lines, start, i, indent, max_chars;
-	char		buf[256];
+	int		panel_w, x0, y0, line_h, max_lines, start, i, indent, text_w;
+	Uint8		er, eg, eb;
 	
+	(void)rtd;
 	if (!g_toc_active)
 		return;
 	
-	panel_w = display->w / 3;
-	if (panel_w > 500)
-		panel_w = 500;
+	panel_w = (display->w * 3) / 4;
 	if (panel_w < 200)
 		panel_w = display->w < 200 ? display->w : 200;
 	
@@ -945,7 +1059,7 @@ static void	RenderTOC( SDL_Surface *display, Green_RTD *rtd )
 	y0 = 8;
 	DrawString( display, x0, y0, "Table of Contents", title_col );
 	y0 += 22;
-	line_h = 16;
+	line_h = 18;
 	max_lines = (display->h - y0) / line_h;
 	if (max_lines <= 0)
 		return;
@@ -978,6 +1092,15 @@ static void	RenderTOC( SDL_Surface *display, Green_RTD *rtd )
 			hl.w = panel_w;
 			hl.h = line_h;
 			SDL_FillRect( display, &hl, sel_bg );
+			er = 0xFF;
+			eg = 0xFF;
+			eb = 0x00;
+		}
+		else
+		{
+			er = 0xB8;
+			eg = 0xB8;
+			eb = 0xB8;
 		}
 		
 		indent = x0 + g_toc_entries[i].depth * 14;
@@ -989,14 +1112,10 @@ static void	RenderTOC( SDL_Surface *display, Green_RTD *rtd )
 				DrawString( display, indent, y, "+", i == g_toc_sel ? sel_col : entry_col );
 		}
 		
-		max_chars = (panel_w - indent - 26) / 12;
-		if (max_chars < 1)
-			max_chars = 1;
-		if (max_chars > (int)sizeof( buf ) - 1)
-			max_chars = sizeof( buf ) - 1;
-		strncpy( buf, n->title, max_chars );
-		buf[max_chars] = 0;
-		DrawString( display, indent + 26, y, buf, i == g_toc_sel ? sel_col : entry_col );
+		text_w = panel_w - indent - 28;
+		if (text_w < 8)
+			text_w = 8;
+		DrawUtf8( display, indent + 26, y, text_w, line_h, n->title ? n->title : "", er, eg, eb );
 	}
 	
 	return;
