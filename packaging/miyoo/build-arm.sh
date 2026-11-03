@@ -19,16 +19,28 @@ CONFIG_FLAGS=(
   '-DGREEN_SYSCONFIG_FILE="/usr/local/etc/green.conf"'
   '-DGREEN_USERCONFIG_FILE=".green.conf"'
 )
+
+# pkg-config against the mini sysroot (pangocairo pulls pango/harfbuzz/cairo flags)
+# share/pkgconfig is required for xproto/kbproto pulled in via cairo's X11 deps
+export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig"
+export PKG_CONFIG_PATH="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig"
+unset PKG_CONFIG_ALLOW_SYSTEM_CFLAGS PKG_CONFIG_ALLOW_SYSTEM_LIBS
+PANGO_CFLAGS="$(pkg-config --cflags pangocairo)"
+PANGO_LIBS="$(pkg-config --libs pangocairo)"
+pkg-config --exists pangocairo || { echo "pangocairo.pc missing in sysroot" >&2; exit 1; }
+
 POPPLER_CFLAGS="-I$POPPLER_INC -I$SYSROOT/usr/include/glib-2.0 -I$SYSROOT/usr/lib/glib-2.0/include -I$SYSROOT/usr/include/cairo -I$SYSROOT/usr/include/pixman-1 -I$SYSROOT/usr/include/freetype2 -I$SYSROOT/usr/include/libpng16"
 POPPLER_LIBS="-L$POPPLER_LIB -lpoppler-glib -L$SYSROOT/usr/lib -lgobject-2.0 -lglib-2.0 -lcairo"
 SDL_CFLAGS="-I$SYSROOT/usr/include/SDL -D_GNU_SOURCE=1 -D_REENTRANT"
 SDL_LIBS="-L$SYSROOT/usr/lib -lSDL -lpthread"
+
 cd "$ROOT"
 $CC --sysroot=$SYSROOT "${CONFIG_FLAGS[@]}" $CFLAGS -c main.c $POPPLER_CFLAGS -o "$OUT/main.o"
 $CC --sysroot=$SYSROOT $CFLAGS -c green.c $POPPLER_CFLAGS -o "$OUT/green.o"
-$CC --sysroot=$SYSROOT $CFLAGS -c sdl.c $POPPLER_CFLAGS $SDL_CFLAGS -o "$OUT/sdl.o"
+$CC --sysroot=$SYSROOT $CFLAGS -c sdl.c $POPPLER_CFLAGS $PANGO_CFLAGS $SDL_CFLAGS -o "$OUT/sdl.o"
 $CC --sysroot=$SYSROOT "$OUT/main.o" "$OUT/green.o" "$OUT/sdl.o" \
-  $POPPLER_LIBS $SDL_LIBS \
+  $POPPLER_LIBS $PANGO_LIBS $SDL_LIBS \
   -Wl,-rpath-link,$POPPLER_LIB -Wl,-rpath-link,$SYSROOT/usr/lib \
   -o "$OUT/green"
 $STRIP "$OUT/green"
