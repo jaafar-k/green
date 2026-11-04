@@ -7,6 +7,8 @@ mkdir -p "$HOME" "$HOME/fontconfig-cache"
 # Fonts for Arabic TOC (Pango/fontconfig); DejaVuSans lives under greendir/fonts
 export FONTCONFIG_FILE="$greendir/fonts.conf"
 export FONTCONFIG_PATH="$greendir"
+# Bundled pango/harfbuzz first (FAT-safe real .so copies), then Parasyte
+export LD_LIBRARY_PATH="$greendir/lib:$sysdir/lib/parasyte:$LD_LIBRARY_PATH"
 
 while :
 do
@@ -17,10 +19,13 @@ do
 	if [ $retVal -eq 137 ] || [ ! -f "$mediadir/.selected.pls" ]; then
 		exit
 	fi
-	selected_file=$(cat "$mediadir/.selected.pls")
+	# Strip CR so Windows-edited .pls paths still work
+	selected_file=$(tr -d '\r' < "$mediadir/.selected.pls")
 	if [ ! -f "$selected_file" ]; then
 		continue
 	fi
 	echo "$selected_file"
-	LD_LIBRARY_PATH="$greendir/lib:$sysdir/lib/parasyte:$LD_LIBRARY_PATH" "$greendir/green" "$selected_file"
+	"$greendir/green" "$selected_file"
+	green_ret=$?
+	echo "$(date) file=$selected_file exit=$green_ret" >> "$HOME/green-launch.log"
 done

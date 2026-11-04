@@ -8,7 +8,7 @@ Onion App launcher + ARM `green` (Pango Arabic TOC) + DejaVuSans + bundled pango
 
 1. Copy `1_RESTORE_App_Green/*` → `/mnt/SDCARD/App/Green/`
 2. Copy `2_REPLACE_tmp_update_bin_green/*` → `/mnt/SDCARD/.tmp_update/bin/green/`
-   (includes `green`, `fonts.conf`, `fonts/`, `lib/`)
+   (includes `green`, `fonts.conf`, `fonts/`, `lib/*.so.0` as real ELF files — not symlinks — for FAT)
 3. PDFs in `/mnt/SDCARD/Media/PDF/`
 
 `launch.sh` prepends `$greendir/lib` then Parasyte on `LD_LIBRARY_PATH`.
