@@ -1,0 +1,22 @@
+Green PDF Reader — Onion folder drop-in
+=======================================
+
+Built from master 33b450a (auto-zoom, wider bookmarks, 180° remapped
+present, zoom/pan keep, H-scroll, scoped launch libs, Pango Arabic TOC).
+
+Install (copy onto SD card)
+---------------------------
+1) App/Green/  →  /mnt/SDCARD/App/Green/
+   (launch.sh + config.json)
+
+2) bin/green/  →  /mnt/SDCARD/.tmp_update/bin/green/
+   (green binary, fonts.conf, fonts/, lib/*.so.0)
+
+Important: lib/*.so.0 are real ELF files (not symlinks) for FAT SD cards.
+
+3) Put PDFs in /mnt/SDCARD/Media/PDF/
+4) Onion Apps → PDF Reader
+
+launch.sh scopes FONTCONFIG/LD_LIBRARY_PATH only around the green binary
+so the stock file picker is unaffected. Check Saves/.../green/green-launch.log
+if startup fails.

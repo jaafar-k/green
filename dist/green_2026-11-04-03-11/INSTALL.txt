@@ -1,0 +1,14 @@
+Green PDF Reader — Onion folder drop-in
+=======================================
+
+Built from master 8dd728c (per-document zoom persistence, finer pan/zoom;
+auto-zoom removed; Pango Arabic TOC; scoped launch env).
+
+Install
+-------
+1) App/Green/  →  /mnt/SDCARD/App/Green/
+2) bin/green/  →  /mnt/SDCARD/.tmp_update/bin/green/
+3) PDFs in /mnt/SDCARD/Media/PDF/ — Apps → PDF Reader
+
+lib/*.so.0 are real ELF files (not symlinks) for FAT SD cards.
+launch.sh scopes FONTCONFIG/LD_LIBRARY_PATH only around green.

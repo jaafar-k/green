@@ -1,0 +1,6 @@
+{
+	"label":	"PDF Reader",
+	"icon":	"/mnt/SDCARD/Themes/Analogue by Aemiii91/icons/app/pdf.png",
+	"launch":	"launch.sh",
+	"description":	"Green"
+}
