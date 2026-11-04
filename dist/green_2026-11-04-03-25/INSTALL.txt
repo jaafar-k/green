@@ -1,0 +1,13 @@
+Green PDF Reader — Onion folder drop-in
+=======================================
+
+Built from master ed74967 (finer H-pan ~1/20 width; V-pan stays
+screenful; picker blank-screen fix; Pango Arabic TOC).
+
+Install
+-------
+1) App/Green/  →  /mnt/SDCARD/App/Green/
+2) bin/green/  →  /mnt/SDCARD/.tmp_update/bin/green/
+3) PDFs in /mnt/SDCARD/Media/PDF/
+
+lib/*.so.0 are real ELF files (not symlinks) for FAT SD cards.
