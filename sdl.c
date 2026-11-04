@@ -1880,27 +1880,28 @@ void	Render( Green_RTD *rtd )
 
 static void	CloseCurrentFile( Green_RTD *rtd, unsigned short *flags )
 {
-	int	i, any = 0;
+	int	i, next = -1;
 	
 	if (Green_IsDocValid( rtd, rtd->doc_cur ))
 		Green_Close( rtd, rtd->doc_cur );
 	
+	/* Green_Close can shrink doc_count; doc_cur may now be past the end */
 	for (i = 0; i < rtd->doc_count; i++)
 		if (rtd->docs[i])
 		{
-			any = 1;
+			next = i;
 			break;
 		}
 	
-	if (!any)
+	if (next < 0)
 	{
-		/* Exit to Onion file picker — skip empty-frame redraw (looks like a hang) */
+		/* Exit to Onion file picker — skip empty-frame redraw */
 		*flags |= FLAG_QUIT;
 		*flags &= ~FLAG_RENDER;
 	}
 	else
 	{
-		Green_NextVaildDoc( rtd );
+		rtd->doc_cur = next;
 		*flags |= FLAG_RENDER;
 	}
 	return;
@@ -2265,6 +2266,23 @@ static int	FilePickerActivate( Green_RTD *rtd, unsigned short *flags )
 		*flags |= FLAG_RENDER;
 		return 1;
 	}
+	
+	/* Replace current PDF (don't stack docs — Menu close left doc_cur invalid/blank) */
+	while (rtd->doc_count > 0)
+	{
+		int	i, closed = 0;
+		
+		for (i = 0; i < rtd->doc_count; i++)
+			if (rtd->docs[i])
+			{
+				Green_Close( rtd, i );
+				closed = 1;
+				break;
+			}
+		if (!closed)
+			break;
+	}
+	rtd->doc_cur = 0;
 	
 	id = Green_Open( rtd, e->path );
 	if (id < 0)
