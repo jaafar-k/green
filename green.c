@@ -331,6 +331,59 @@ void	Green_SaveAllLastPages( Green_RTD *rtd )
 			StoreLastPage( rtd->docs[i], false );
 	
 	SaveLastPagesFile();
+	Green_SaveSettings( rtd );
+	return;
+}
+
+static char	*SettingsPath( void )
+{
+	static char	path[512];
+	const char	*home = getenv( "HOME" );
+	
+	if (!home || !*home)
+		return NULL;
+	if (snprintf( path, sizeof( path ), "%s/.green.settings", home ) >= (int)sizeof( path ))
+		return NULL;
+	return path;
+}
+
+void	Green_LoadSettings( Green_RTD *rtd )
+{
+	FILE	*file;
+	char	*path = SettingsPath();
+	char	line[128];
+	
+	if (!rtd || !path)
+		return;
+	
+	file = fopen( path, "r" );
+	if (!file)
+		return;
+	
+	while (fgets( line, sizeof( line ), file ))
+	{
+		if (!strncmp( line, "night=", 6 ))
+			rtd->night = (line[6] != '0');
+	}
+	
+	fclose( file );
+	return;
+}
+
+void	Green_SaveSettings( Green_RTD *rtd )
+{
+	FILE	*file;
+	char	*path = SettingsPath();
+	
+	if (!rtd || !path)
+		return;
+	
+	file = fopen( path, "w" );
+	if (!file)
+		return;
+	
+	fprintf( file, "night=%d\n", rtd->night ? 1 : 0 );
+	fclose( file );
 	return;
 }
 

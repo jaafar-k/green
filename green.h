@@ -96,6 +96,8 @@ typedef struct
 int	Green_Open( Green_RTD *rtd, char *uri );
 void	Green_Close( Green_RTD *rtd, int id );
 void	Green_SaveAllLastPages( Green_RTD *rtd );
+void	Green_LoadSettings( Green_RTD *rtd );
+void	Green_SaveSettings( Green_RTD *rtd );
 double	Green_Fit( Green_Document *doc, int width, int height );
 void	Green_ScrollRelative( Green_Document *doc, int x, int y, int w, int h, int bb_flag );
 void	Green_GetScrollRegion( Green_Document *doc, int w, int h, int *scroll_w, int *scroll_h );
