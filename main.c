@@ -909,6 +909,7 @@ int	main( int argc, char *argv[] )
 	rtd.bb = 0x04;
 	rtd.side_by_side = 0;
 	rtd.night = true;
+	rtd.auto_zoom = false;
 	rtd.mouse.flags = 1;
 	rtd.mouse.visibility = 500;
 	rtd.mouse.border_size = 0;

@@ -76,6 +76,7 @@ typedef struct
 	unsigned char	bb;
 	unsigned char	side_by_side;
 	bool		night;
+	bool		auto_zoom;	/* zoom to content bbox (text/images, else ink scan) */
 	
 	struct
 	{
@@ -102,6 +103,8 @@ double	Green_Fit( Green_Document *doc, int width, int height );
 void	Green_ScrollRelative( Green_Document *doc, int x, int y, int w, int h, int bb_flag );
 void	Green_GetScrollRegion( Green_Document *doc, int w, int h, int *scroll_w, int *scroll_h );
 void	Green_Zoom( Green_Document *doc, int width, int height, double new_fs );
+/* Fit view to page content; returns 1 if zoom/pan applied */
+int	Green_ApplyAutoZoom( Green_Document *doc, int view_w, int view_h );
 int	Green_FindNext( Green_Document *doc, int start );
 int	Green_FindPrevious( Green_Document *doc, int start );
 
