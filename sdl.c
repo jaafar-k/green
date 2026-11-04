@@ -2484,13 +2484,13 @@ static RState	OpenBookmarksPanel( Green_RTD *rtd, unsigned short *flags )
 	return BOOKMARKS;
 }
 
-/* Pan ~1/10 of view per click (min 12px) */
-static int	PanStep( int extent )
+/* Horizontal pan only: ~1/20 of view width per click (min 8px) */
+static int	HPanStep( int vw )
 {
-	int	s = extent / 10;
+	int	s = vw / 20;
 	
-	if (s < 12)
-		s = 12;
+	if (s < 8)
+		s = 8;
 	return s;
 }
 
@@ -2499,8 +2499,7 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 	Green_Document	*doc = NULL;
 	SDL_Surface	*display = DrawSurface();
 	RState	state = NORMAL;
-	int	f = 0, vw = ViewWidth( rtd );
-	int	hstep = PanStep( vw ), vstep = PanStep( display->h );
+	int	f = 0, vw = ViewWidth( rtd ), hstep = HPanStep( vw );
 	SDLKey	sym = event->key.keysym.sym;
 	
 	if (Green_IsDocValid( rtd, rtd->doc_cur ))
@@ -2615,7 +2614,7 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				if (!Green_GotoPage( doc, doc->page_cur - 2, true ))
 					break;
 			} else {
-				Green_ScrollRelative( doc, 0, -vstep, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, - display->h * rtd->step, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
@@ -2628,7 +2627,7 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				if (!Green_GotoPage( doc, doc->page_cur - 2, true ))
 					break;
 			} else {
-				Green_ScrollRelative( doc, 0, -vstep, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, - display->h * rtd->step, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
@@ -2644,10 +2643,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 					if (!Green_GotoPage( doc, doc->page_cur + 2, true ))
 						break;
 				} else {
-					Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
+					Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
 				}
 			} else {
-				Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
@@ -2663,10 +2662,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 					if (!Green_GotoPage( doc, doc->page_cur + 2, true ))
 						break;
 				} else {
-					Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
+					Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
 				}
 			} else {
-				Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
