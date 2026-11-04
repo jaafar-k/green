@@ -1,28 +1,24 @@
 # Miyoo Mini / Onion OS packages
 
-## Small drop-in (recommended)
+## Folder drop-in (current)
 
-**Artifact:** [`green-onion-dropin.zip`](./green-onion-dropin.zip) (~1.5 MB)
+**Folder:** [`green_2026-11-04-02:57/`](./green_2026-11-04-02:57/)  
+**Tar (easy download):** [`green_2026-11-04-02:57.tar`](./green_2026-11-04-02:57.tar) (~3.4 MB)
 
-Onion App launcher + ARM `green` (Pango Arabic TOC) + DejaVuSans + bundled pango/harfbuzz under `lib/`.
+Built from master `33b450a` (auto-zoom, wider bookmarks, scoped launch libs, Pango Arabic TOC).
 
-1. Copy `1_RESTORE_App_Green/*` → `/mnt/SDCARD/App/Green/`
-2. Copy `2_REPLACE_tmp_update_bin_green/*` → `/mnt/SDCARD/.tmp_update/bin/green/`
-   (includes `green`, `fonts.conf`, `fonts/`, `lib/*.so.0` as real ELF files — not symlinks — for FAT)
+Install:
+1. `App/Green/` → `/mnt/SDCARD/App/Green/`
+2. `bin/green/` → `/mnt/SDCARD/.tmp_update/bin/green/`
 3. PDFs in `/mnt/SDCARD/Media/PDF/`
 
-`launch.sh` prepends `$greendir/lib` then Parasyte on `LD_LIBRARY_PATH`.
+`bin/green/lib/*.so.0` are **real ELF files** (not symlinks) for FAT SD cards.
 
-See `INSTALL.txt` inside the zip.
+## Older zip drop-in
 
-## Full standalone package
-
-**Artifact:** [`green-onion-miyoo.zip`](./green-onion-miyoo.zip) (~75 MB)
-
-Older Steward-style full app tree. Prefer the drop-in above.
+[`green-onion-dropin.zip`](./green-onion-dropin.zip) — superseded by the folder/tar above.
 
 ## Notes
 
-- Binary is **SDL 1.2**, ARM EABI5 hard-float, linked to `libpangocairo` / `libpango` / `libharfbuzz` / `libfribidi`.
-- Cross-build uses mini sysroot pango headers/libs; runtime pango stack is bundled in the drop-in `lib/` (stock Onion Parasyte often lacks them).
+- SDL 1.2 ARM EABI5; linked to pangocairo/pango/harfbuzz/fribidi from mini sysroot; runtime libs bundled under `bin/green/lib/`.
 - Rebuild: `packaging/miyoo/build-arm.sh`
