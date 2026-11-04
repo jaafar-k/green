@@ -103,6 +103,8 @@ Miyoo buttons are exposed as SDL keys (Onion/MinUI). Mapped as:
 | Select + X | Mirror horizontally |
 | Select + Y | Mirror vertically |
 | Select + L1 | Toggle dual-page mode |
+| Select + R1 | Open PDF/folder picker (Arabic filenames OK) |
+| Select + L2 | Controls help (scrollable; B closes) |
 | Menu | Close file (quit if none left) |
 
 Select is a hold-modifier: chords fire on the face button; a plain Select release opens bookmarks.
@@ -111,11 +113,11 @@ Select is a hold-modifier: chords fire on the face button; a plain Select releas
 `b` - Open the bookmarks panel for the current document.  
 `B` (`Shift+b`) - Toggle a bookmark on the current page.  
 In the bookmarks panel:  
-`<j, k>` - Move the selection up and down.  
-`<RETURN>` - Jump to the selected bookmark.  
-`a` - Add a bookmark for the current page.  
-`x` - Delete the selected bookmark.  
-`<ESC>` / `b` - Close the bookmarks panel.
+`<j, k>` / D-pad - Move the selection (hold Up/Down to scrub).  
+`A` - Jump to the selected bookmark.  
+`Y` / `a` - Add a bookmark for the current page.  
+`X` / `x` - Delete the selected bookmark.  
+`B` / `<ESC>` / `b` - Close the bookmarks panel.
 
 ### FITTING
 `fn` - disable page fitting mode.
@@ -196,6 +198,7 @@ This fork adds the following on top of the original `green`:
    `~/.green.pages` and jumps back there when the file is opened again.
  - **Miyoo Mini controls**: handheld mapping with Select chords (tap Select =
    bookmarks, Start = TOC, Select+A/B/X/Y = night / bookmark / mirrors).
- - **Arabic TOC**: table-of-contents titles render via Pango (UTF-8, shaping,
-   RTL) when a font such as DejaVu Sans is available to fontconfig.
+ - **Arabic TOC / file picker**: TOC titles and the in-app PDF browser
+   (Select+R1) render via Pango (UTF-8, shaping, RTL) when a font such as
+   DejaVu Sans is available to fontconfig.
 

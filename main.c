@@ -903,7 +903,7 @@ int	main( int argc, char *argv[] )
 	rtd.c_highlight.g = 0xFF;
 	rtd.c_highlight.b = 0x80;
 	rtd.c_highlight.a = 0x80;
-	rtd.fit_method = NATURAL;
+	rtd.fit_method = WIDTH;
 	rtd.step = 1;
 	rtd.zoomstep = 1.1;
 	rtd.bb = 0x04;
@@ -915,6 +915,7 @@ int	main( int argc, char *argv[] )
 	rtd.mouse.border_speed = 1;
 	schemes.scheme = NULL;
 	schemes.n = 0;
+	Green_LoadSettings( &rtd );
 	g_type_init();
 	
 	for (i = 1; i < argc; i++)
