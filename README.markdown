@@ -105,8 +105,9 @@ Miyoo buttons are exposed as SDL keys (Onion/MinUI). Mapped as:
 | Select + L1 | Toggle dual-page mode |
 | Select + R1 | Open PDF/folder picker (Arabic filenames OK) |
 | Select + L2 | Controls help (scrollable; B closes) |
-| Select + R2 | Toggle auto-zoom to content (text/images, else ink scan) |
 | Menu | Close file (quit if none left) |
+
+Zoom level (`finescale`) is remembered per document across close/reopen.
 
 Select is a hold-modifier: chords fire on the face button; a plain Select release opens bookmarks.
 
