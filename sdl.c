@@ -125,8 +125,6 @@ static Uint32	g_list_nav_next = 0;
 
 static bool	g_help_active = false;
 static int	g_help_scroll = 0;
-/* Last page auto-zoom was applied to; -2 = need reapply when enabled */
-static int	g_az_page = -2;
 
 static const char	*g_help_lines[] = {
 	"Miyoo controls",
@@ -151,7 +149,6 @@ static const char	*g_help_lines[] = {
 	"Select+L1      Dual-page mode",
 	"Select+R1      PDF / folder picker",
 	"Select+L2      This help",
-	"Select+R2      Auto-zoom to content",
 	"",
 	"In ToC",
 	"",
@@ -1793,13 +1790,6 @@ void	Render( Green_RTD *rtd )
 	
 	doc = rtd->docs[rtd->doc_cur];
 	
-	/* Auto-zoom to content once per page when enabled */
-	if (rtd->auto_zoom && g_az_page != doc->page_cur)
-	{
-		Green_ApplyAutoZoom( doc, ViewWidth( rtd ), display->h );
-		g_az_page = doc->page_cur;
-	}
-	
 	if (rtd->side_by_side && doc->page_count > 1)
 	{
 		int left_page, right_page;
@@ -2475,13 +2465,13 @@ static RState	OpenBookmarksPanel( Green_RTD *rtd, unsigned short *flags )
 	return BOOKMARKS;
 }
 
-/* Horizontal pan: ~1/5 view width (was full width — too coarse when zoomed) */
-static int	HScrollStep( int vw )
+/* Pan ~1/10 of view per click (min 12px) */
+static int	PanStep( int extent )
 {
-	int	s = vw / 5;
+	int	s = extent / 10;
 	
-	if (s < 16)
-		s = 16;
+	if (s < 12)
+		s = 12;
 	return s;
 }
 
@@ -2490,7 +2480,8 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 	Green_Document	*doc = NULL;
 	SDL_Surface	*display = DrawSurface();
 	RState	state = NORMAL;
-	int	f = 0, vw = ViewWidth( rtd ), hstep = HScrollStep( vw );
+	int	f = 0, vw = ViewWidth( rtd );
+	int	hstep = PanStep( vw ), vstep = PanStep( display->h );
 	SDLKey	sym = event->key.keysym.sym;
 	
 	if (Green_IsDocValid( rtd, rtd->doc_cur ))
@@ -2554,31 +2545,6 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				/* Select+L2: controls help */
 				g_select_chord = true;
 				return OpenHelpPanel( flags );
-			case SDLK_BACKSPACE:
-				/* Select+R2: toggle auto-zoom to content */
-				g_select_chord = true;
-				rtd->auto_zoom = !rtd->auto_zoom;
-				Green_SaveSettings( rtd );
-				g_az_page = -2;
-				if (rtd->auto_zoom)
-				{
-					ShowToast( "Auto-zoom On" );
-					if (doc)
-						Green_ApplyAutoZoom( doc, vw, display->h );
-					g_az_page = doc ? doc->page_cur : -2;
-				}
-				else
-				{
-					ShowToast( "Auto-zoom Off" );
-					if (doc)
-					{
-						doc->finescale = 1;
-						doc->xoffset = 0;
-						doc->yoffset = 0;
-					}
-				}
-				*flags |= FLAG_RENDER;
-				return NORMAL;
 			case SDLK_RCTRL:
 				return NORMAL;
 			default:
@@ -2630,7 +2596,7 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				if (!Green_GotoPage( doc, doc->page_cur - 2, true ))
 					break;
 			} else {
-				Green_ScrollRelative( doc, 0, - display->h * rtd->step, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, -vstep, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
@@ -2643,7 +2609,7 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				if (!Green_GotoPage( doc, doc->page_cur - 2, true ))
 					break;
 			} else {
-				Green_ScrollRelative( doc, 0, - display->h * rtd->step, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, -vstep, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
@@ -2659,10 +2625,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 					if (!Green_GotoPage( doc, doc->page_cur + 2, true ))
 						break;
 				} else {
-					Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
+					Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
 				}
 			} else {
-				Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
@@ -2678,10 +2644,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 					if (!Green_GotoPage( doc, doc->page_cur + 2, true ))
 						break;
 				} else {
-					Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
+					Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
 				}
 			} else {
-				Green_ScrollRelative( doc, 0, display->h * rtd->step, vw, display->h, 1 );
+				Green_ScrollRelative( doc, 0, vstep, vw, display->h, 1 );
 			}
 			*flags |= FLAG_RENDER;
 			break;
@@ -2769,17 +2735,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_SPACE:
-			/* A on Miyoo Mini: fit width (clears auto-zoom) */
+			/* A on Miyoo Mini: fit width */
 			if (!doc)
 				break;
 			
-			if (rtd->auto_zoom)
-			{
-				rtd->auto_zoom = false;
-				Green_SaveSettings( rtd );
-				g_az_page = -2;
-				ShowToast( "Auto-zoom Off" );
-			}
 			doc->fit_method = WIDTH;
 			doc->finescale = 1;
 			doc->xoffset = 0;

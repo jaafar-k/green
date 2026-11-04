@@ -36,7 +36,7 @@ main.o: main.c green.h
 	$(CC) $(CONFIG) $(CFLAGS) -c $< $(POPPLER_CFLAGS) -o $@
 
 green.o: green.c green.h
-	$(CC) $(CFLAGS) -c $< $(POPPLER_CFLAGS) $(PANGO_CFLAGS) -o $@
+	$(CC) $(CFLAGS) -c $< $(POPPLER_CFLAGS) -o $@
 
 sdl.o: sdl.c green.h
 	$(CC) $(CFLAGS) -c $< $(POPPLER_CFLAGS) $(PANGO_CFLAGS) $(SDL_CFLAGS) -o $@
