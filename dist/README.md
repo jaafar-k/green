@@ -2,10 +2,10 @@
 
 ## Folder drop-in (current)
 
-**Folder:** [`green_2026-11-04-03-11/`](./green_2026-11-04-03-11/)  
-**Tar:** [`green_2026-11-04-03-11.tar`](./green_2026-11-04-03-11.tar) (~3.4 MB)
+**Folder:** [`green_2026-11-04-03-15/`](./green_2026-11-04-03-15/)  
+**Tar:** [`green_2026-11-04-03-15.tar`](./green_2026-11-04-03-15.tar) (~3.4 MB)
 
-Built from master `8dd728c` (per-document zoom persistence, finer pan/zoom; auto-zoom removed).
+Built from master `5f9ba99` (blank-screen fix after in-app file picker close).
 
 Install:
 1. `App/Green/` → `/mnt/SDCARD/App/Green/`
@@ -13,8 +13,3 @@ Install:
 3. PDFs in `/mnt/SDCARD/Media/PDF/`
 
 `bin/green/lib/*.so.0` are real ELF files (not symlinks) for FAT.
-
-## Notes
-
-- SDL 1.2 ARM EABI5; pangocairo linked from mini sysroot; runtime libs under `bin/green/lib/`.
-- Rebuild: `packaging/miyoo/build-arm.sh`
