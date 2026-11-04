@@ -4,14 +4,11 @@ mediadir=/mnt/SDCARD/Media/PDF
 greendir=$sysdir/bin/green
 export HOME=/mnt/SDCARD/Saves/CurrentProfile/saves/green
 mkdir -p "$HOME" "$HOME/fontconfig-cache"
-export FONTCONFIG_FILE="$greendir/fonts.conf"
-export FONTCONFIG_PATH="$greendir"
-# greendir/lib first: FAT has no symlinks; real lib*.so.0 copies live here
-export LD_LIBRARY_PATH="$greendir/lib:$sysdir/lib/parasyte:$LD_LIBRARY_PATH"
 
 while :
 do
 	cd $sysdir
+	# Keep st/file_selector on stock libs — do not export green's pango/fontconfig
 	./bin/st -q -e "$sysdir/script/file_selector.sh" "PDF Reader" "$mediadir" "pdf"
 	retVal=$?
 	echo "=================" "$retVal"
@@ -24,6 +21,10 @@ do
 		continue
 	fi
 	echo "$selected_file"
-	"$greendir/green" "$selected_file"
+	# Pango libs + fonts only for green (FAT needs real .so.0 files under greendir/lib)
+	FONTCONFIG_FILE="$greendir/fonts.conf" \
+	FONTCONFIG_PATH="$greendir" \
+	LD_LIBRARY_PATH="$greendir/lib:$sysdir/lib/parasyte:$LD_LIBRARY_PATH" \
+		"$greendir/green" "$selected_file"
 	echo "green exit $? for $selected_file" >> "$HOME/green-launch.log"
 done
