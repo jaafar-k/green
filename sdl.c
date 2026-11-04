@@ -96,9 +96,7 @@ static bool	g_x_chord = false;
 static bool	g_y_held = false;
 static bool	g_y_chord = false;
 
-/* Miyoo Mini panel is mounted 180°; draw upright then present rotated (Steward) */
-static SDL_Surface	*g_screen = NULL;
-static SDL_Surface	*g_monitor = NULL;
+/* Miyoo Mini panel is mounted 180°: write logical upright coords remapped into the FB */
 static int	g_rotate180 = 0;
 
 /* Brief top-right status toast (e.g. bookmark toggle) */
@@ -127,6 +125,8 @@ static Uint32	g_list_nav_next = 0;
 
 static bool	g_help_active = false;
 static int	g_help_scroll = 0;
+/* Last page auto-zoom was applied to; -2 = need reapply when enabled */
+static int	g_az_page = -2;
 
 static const char	*g_help_lines[] = {
 	"Miyoo controls",
@@ -151,6 +151,7 @@ static const char	*g_help_lines[] = {
 	"Select+L1      Dual-page mode",
 	"Select+R1      PDF / folder picker",
 	"Select+L2      This help",
+	"Select+R2      Auto-zoom to content",
 	"",
 	"In ToC",
 	"",
@@ -193,33 +194,61 @@ static int	IsMiyoo( void )
 
 static SDL_Surface	*DrawSurface( void )
 {
-	if (g_screen)
-		return g_screen;
 	return SDL_GetVideoSurface();
 }
 
-/* Copy upright backbuffer to the physical panel with 180° rotation */
-static void	Present( void )
+/* Map logical upright rect → physical FB rect (identity when not rotating) */
+static void	FlipRect( SDL_Surface *s, SDL_Rect *r )
 {
-	int	x, y, w, h, sp, dp;
-	Uint32	*s, *d;
+	if (!g_rotate180 || !s || !r)
+		return;
+	r->x = s->w - r->x - r->w;
+	r->y = s->h - r->y - r->h;
+}
+
+static void	FillRect( SDL_Surface *s, SDL_Rect *r, Uint32 color )
+{
+	SDL_Rect	t;
 	
-	if (!g_rotate180 || !g_screen || !g_monitor)
+	if (!r)
 	{
-		SDL_UpdateRect( SDL_GetVideoSurface(), 0, 0, 0, 0 );
+		SDL_FillRect( s, NULL, color );
 		return;
 	}
+	t = *r;
+	FlipRect( s, &t );
+	SDL_FillRect( s, &t, color );
+}
+
+/* Logical (lx,ly) → pointer into FB; horizontal scan uses DstXStepBytes */
+static Uint8	*DstPixel( SDL_Surface *d, int lx, int ly )
+{
+	int	px = lx, py = ly;
 	
-	w = g_screen->w;
-	h = g_screen->h;
-	sp = g_screen->pitch / 4;
-	dp = g_monitor->pitch / 4;
-	s = (Uint32 *)g_screen->pixels;
-	d = (Uint32 *)g_monitor->pixels;
-	for (y = 0; y < h; y++)
-		for (x = 0; x < w; x++)
-			d[(h - 1 - y) * dp + (w - 1 - x)] = s[y * sp + x];
-	SDL_Flip( g_monitor );
+	if (g_rotate180)
+	{
+		px = d->w - 1 - lx;
+		py = d->h - 1 - ly;
+	}
+	return (Uint8 *)d->pixels + py * d->pitch + px * d->format->BytesPerPixel;
+}
+
+static int	DstXStepBytes( SDL_Surface *d )
+{
+	return g_rotate180 ? -d->format->BytesPerPixel : d->format->BytesPerPixel;
+}
+
+/* No full-frame rotate copy — pixels were written already remapped */
+static void	Present( void )
+{
+	SDL_Surface	*v = SDL_GetVideoSurface();
+	
+	if (!v)
+		return;
+	if (g_rotate180)
+		SDL_Flip( v );
+	else
+		SDL_UpdateRect( v, 0, 0, 0, 0 );
 }
 
 // Simple 5x7 bitmap font for basic ASCII characters (32-126)
@@ -506,13 +535,12 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 		{
 			src = (Uint32 *)((char *)pixels + (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * 4
 				+ (yoff + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride);
-			dst = display->pixels + (dest.y + y) * display->pitch
-				+ dest.x * fmt.BytesPerPixel;
+			dst = (Uint32 *)DstPixel( display, dest.x, dest.y + y );
 			for (x = 0; x < dest.w; x++)
 			{
 				*dst = MapDisplayPixel( *src, &fmt, rtd->night );
 				src = (Uint32 *)((char *)src + dir_x * rowstride);
-				dst = (void *)dst + fmt.BytesPerPixel;
+				dst = (Uint32 *)((Uint8 *)dst + DstXStepBytes( display ));
 			}
 		}
 	}
@@ -522,13 +550,12 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 		{
 			src = (Uint32 *)((char *)pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride
 				+ (xoff + (dir_x < 0 ? dest.w - 1 : 0)) * 4);
-			dst = display->pixels + (dest.y + y) * display->pitch
-				+ dest.x * fmt.BytesPerPixel;
+			dst = (Uint32 *)DstPixel( display, dest.x, dest.y + y );
 			for (x = 0; x < dest.w; x++)
 			{
 				*dst = MapDisplayPixel( *src, &fmt, rtd->night );
 				src += dir_x;
-				dst = (void *)dst + fmt.BytesPerPixel;
+				dst = (Uint32 *)((Uint8 *)dst + DstXStepBytes( display ));
 			}
 		}
 	}
@@ -620,13 +647,12 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 				{
 					src = (Uint32 *)((char *)pixels + (xoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * 4
 						+ (yoff + dir_x * (int)rect->x1 + (dir_x < 0 ? dest.w - 1 : 0)) * rowstride);
-					dst = display->pixels + (dest.y + y) * display->pitch
-						+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
+					dst = (Uint32 *)DstPixel( display, dest.x + (int)rect->x1, dest.y + y );
 					for (x = rect->x1; x < (int)rect->x2; x++)
 					{
 						*dst = MapBlendPixel( *src, &fmt, ia, ar, ag, ab, rtd->night );
 						src = (Uint32 *)((char *)src + dir_x * rowstride);
-						dst = (void *)dst + fmt.BytesPerPixel;
+						dst = (Uint32 *)((Uint8 *)dst + DstXStepBytes( display ));
 					}
 				}
 			}
@@ -636,13 +662,12 @@ void	RenderPage( Green_RTD *rtd, SDL_Rect dest, int xoff, int yoff, PopplerPage 
 				{
 					src = (Uint32 *)((char *)pixels + (yoff + dir_y * y + (dir_y < 0 ? dest.h - 1 : 0)) * rowstride
 						+ (xoff + dir_x * (int)rect->x1 + (dir_x < 0 ? dest.w - 1 : 0)) * 4);
-					dst = display->pixels + (dest.y + y) * display->pitch
-						+ (dest.x + (int)rect->x1) * fmt.BytesPerPixel;
+					dst = (Uint32 *)DstPixel( display, dest.x + (int)rect->x1, dest.y + y );
 					for (x = rect->x1; x < (int)rect->x2; x++)
 					{
 						*dst = MapBlendPixel( *src, &fmt, ia, ar, ag, ab, rtd->night );
 						src += dir_x;
-						dst = (void *)dst + fmt.BytesPerPixel;
+						dst = (Uint32 *)((Uint8 *)dst + DstXStepBytes( display ));
 					}
 				}
 			}
@@ -682,7 +707,7 @@ void DrawChar( SDL_Surface *display, int x, int y, char c, Uint32 color )
 			{
 				pixel.x = x + col * 2;
 				pixel.y = y + row * 2;
-				SDL_FillRect( display, &pixel, color );
+				FillRect( display, &pixel, color );
 			}
 		}
 	}
@@ -804,7 +829,7 @@ static int	DrawUtf8( SDL_Surface *display, int x, int y, int max_w, int line_h,
 			pixel.w = 1;
 			pixel.h = 1;
 			if (pixel.x >= 0 && pixel.y >= 0 && pixel.x < display->w && pixel.y < display->h)
-				SDL_FillRect( display, &pixel, SDL_MapRGB( display->format, r, g, b ) );
+				FillRect( display, &pixel, SDL_MapRGB( display->format, r, g, b ) );
 		}
 	}
 	
@@ -846,7 +871,7 @@ static void	RenderToast( SDL_Surface *display )
 	
 	bg = SDL_MapRGB( display->format, 0x20, 0x20, 0x28 );
 	fg = SDL_MapRGB( display->format, 0xFF, 0xFF, 0xCC );
-	SDL_FillRect( display, &box, bg );
+	FillRect( display, &box, bg );
 	DrawString( display, box.x + pad, box.y + pad, g_toast_msg, fg );
 }
 
@@ -874,21 +899,21 @@ void	RenderSearchBox( SDL_Surface *display, IBuffer *input, RState state )
 	box.y = display->h - box_height - 40;
 	box.w = box_width;
 	box.h = box_height;
-	SDL_FillRect( display, &box, SDL_MapRGB( display->format, 200, 200, 200 ) );
+	FillRect( display, &box, SDL_MapRGB( display->format, 200, 200, 200 ) );
 	
 	// Draw inner background
 	inner_box.x = box.x + 2;
 	inner_box.y = box.y + 2;
 	inner_box.w = box.w - 4;
 	inner_box.h = box.h - 4;
-	SDL_FillRect( display, &inner_box, SDL_MapRGB( display->format, 40, 40, 40 ) );
+	FillRect( display, &inner_box, SDL_MapRGB( display->format, 40, 40, 40 ) );
 	
 	// Draw text background area
 	text_bg.x = inner_box.x + box_padding;
 	text_bg.y = inner_box.y + box_padding;
 	text_bg.w = inner_box.w - 2 * box_padding;
 	text_bg.h = text_height;
-	SDL_FillRect( display, &text_bg, SDL_MapRGB( display->format, 30, 30, 30 ) );
+	FillRect( display, &text_bg, SDL_MapRGB( display->format, 30, 30, 30 ) );
 	
 	// Draw prompt
 	const char *prompt = state == SEARCH ? "Search: " : "Go to page: ";
@@ -911,7 +936,7 @@ void	RenderSearchBox( SDL_Surface *display, IBuffer *input, RState state )
 	
 	// Blinking cursor effect
 	if ((SDL_GetTicks() / 500) % 2 == 0)
-		SDL_FillRect( display, &cursor, yellow_color );
+		FillRect( display, &cursor, yellow_color );
 }
 
 static int	ViewWidth( Green_RTD *rtd )
@@ -1128,7 +1153,7 @@ static void	RenderTOC( SDL_Surface *display, Green_RTD *rtd )
 	panel.y = 0;
 	panel.w = panel_w;
 	panel.h = display->h;
-	SDL_FillRect( display, &panel, SDL_MapRGB( display->format, 0x14, 0x14, 0x14 ) );
+	FillRect( display, &panel, SDL_MapRGB( display->format, 0x14, 0x14, 0x14 ) );
 	
 	title_col = SDL_MapRGB( display->format, 0xE8, 0xE8, 0xE8 );
 	entry_col = SDL_MapRGB( display->format, 0xB8, 0xB8, 0xB8 );
@@ -1171,7 +1196,7 @@ static void	RenderTOC( SDL_Surface *display, Green_RTD *rtd )
 			hl.y = y;
 			hl.w = panel_w;
 			hl.h = line_h;
-			SDL_FillRect( display, &hl, sel_bg );
+			FillRect( display, &hl, sel_bg );
 			er = 0xFF;
 			eg = 0xFF;
 			eb = 0x00;
@@ -1611,17 +1636,18 @@ static void	RenderBookmarks( SDL_Surface *display, Green_RTD *rtd )
 	if (!g_bm_active)
 		return;
 	
-	panel_w = display->w / 3;
+	/* Half width so help line "Y:add X:del A:go B:back" fits (~264px) */
+	panel_w = display->w / 2;
 	if (panel_w > 500)
 		panel_w = 500;
-	if (panel_w < 200)
-		panel_w = display->w < 200 ? display->w : 200;
+	if (panel_w < 280)
+		panel_w = display->w < 280 ? display->w : 280;
 	
 	panel.x = 0;
 	panel.y = 0;
 	panel.w = panel_w;
 	panel.h = display->h;
-	SDL_FillRect( display, &panel, SDL_MapRGB( display->format, 0x14, 0x14, 0x14 ) );
+	FillRect( display, &panel, SDL_MapRGB( display->format, 0x14, 0x14, 0x14 ) );
 	
 	title_col = SDL_MapRGB( display->format, 0xE8, 0xE8, 0xE8 );
 	entry_col = SDL_MapRGB( display->format, 0xB8, 0xB8, 0xB8 );
@@ -1667,7 +1693,7 @@ static void	RenderBookmarks( SDL_Surface *display, Green_RTD *rtd )
 			hl.y = y;
 			hl.w = panel_w;
 			hl.h = line_h;
-			SDL_FillRect( display, &hl, sel_bg );
+			FillRect( display, &hl, sel_bg );
 		}
 		
 		snprintf( buf, sizeof( buf ), "Page %d", bm->page + 1 );
@@ -1757,9 +1783,9 @@ void	Render( Green_RTD *rtd )
 	rect.w = display->w;
 	rect.h = display->h;
 	if (rtd->night)
-		SDL_FillRect( display, &rect, SDL_MapRGB( display->format, 0x10, 0x10, 0x10 ) );
+		FillRect( display, &rect, SDL_MapRGB( display->format, 0x10, 0x10, 0x10 ) );
 	else
-		SDL_FillRect( display, &rect, SDL_MapRGB( display->format, rtd->c_background.r, rtd->c_background.g, rtd->c_background.b ));
+		FillRect( display, &rect, SDL_MapRGB( display->format, rtd->c_background.r, rtd->c_background.g, rtd->c_background.b ));
 	if (!Green_IsDocValid( rtd, rtd->doc_cur ))
 	{
 		Present();
@@ -1767,6 +1793,13 @@ void	Render( Green_RTD *rtd )
 	}
 	
 	doc = rtd->docs[rtd->doc_cur];
+	
+	/* Auto-zoom to content once per page when enabled */
+	if (rtd->auto_zoom && g_az_page != doc->page_cur)
+	{
+		Green_ApplyAutoZoom( doc, ViewWidth( rtd ), display->h );
+		g_az_page = doc->page_cur;
+	}
 	
 	if (rtd->side_by_side && doc->page_count > 1)
 	{
@@ -1871,7 +1904,11 @@ static void	CloseCurrentFile( Green_RTD *rtd, unsigned short *flags )
 		}
 	
 	if (!any)
+	{
+		/* Exit to Onion file picker — skip empty-frame redraw (looks like a hang) */
 		*flags |= FLAG_QUIT;
+		*flags &= ~FLAG_RENDER;
+	}
 	else
 	{
 		Green_NextVaildDoc( rtd );
@@ -1880,7 +1917,16 @@ static void	CloseCurrentFile( Green_RTD *rtd, unsigned short *flags )
 	return;
 }
 
-static void	SkipPages( Green_Document *doc, Green_RTD *rtd, int delta, unsigned short *flags )
+/* Page turn keeps finescale + pan; clamp offsets to the new page */
+static int	GotoPageKeepView( Green_Document *doc, int page, int w, int h )
+{
+	if (!Green_GotoPage( doc, page, false ))
+		return 0;
+	Green_ValidateOffset( doc, w, h );
+	return 1;
+}
+
+static void	SkipPages( Green_Document *doc, Green_RTD *rtd, int delta, int w, int h, unsigned short *flags )
 {
 	int	page;
 	
@@ -1896,7 +1942,7 @@ static void	SkipPages( Green_Document *doc, Green_RTD *rtd, int delta, unsigned 
 	if (page == doc->page_cur)
 		return;
 	
-	if (Green_GotoPage( doc, page, true ))
+	if (GotoPageKeepView( doc, page, w, h ))
 		*flags |= FLAG_RENDER;
 	return;
 }
@@ -1956,7 +2002,7 @@ static void	RenderHelp( SDL_Surface *display )
 	panel.y = 0;
 	panel.w = display->w;
 	panel.h = display->h;
-	SDL_FillRect( display, &panel, SDL_MapRGB( display->format, 0x10, 0x10, 0x18 ) );
+	FillRect( display, &panel, SDL_MapRGB( display->format, 0x10, 0x10, 0x18 ) );
 	
 	title_col = SDL_MapRGB( display->format, 0xFF, 0xFF, 0xCC );
 	text_col = SDL_MapRGB( display->format, 0xD0, 0xD0, 0xD0 );
@@ -2261,7 +2307,7 @@ static void	RenderFilePicker( SDL_Surface *display )
 	panel.y = 0;
 	panel.w = display->w;
 	panel.h = display->h;
-	SDL_FillRect( display, &panel, SDL_MapRGB( display->format, 0x12, 0x12, 0x18 ) );
+	FillRect( display, &panel, SDL_MapRGB( display->format, 0x12, 0x12, 0x18 ) );
 	
 	x0 = 8;
 	y0 = 8;
@@ -2305,7 +2351,7 @@ static void	RenderFilePicker( SDL_Surface *display )
 			hl.y = y;
 			hl.w = display->w;
 			hl.h = line_h;
-			SDL_FillRect( display, &hl, SDL_MapRGB( display->format, 0x2E, 0x2E, 0x5E ) );
+			FillRect( display, &hl, SDL_MapRGB( display->format, 0x2E, 0x2E, 0x5E ) );
 			er = 0xFF;
 			eg = 0xFF;
 			eb = 0x00;
@@ -2430,12 +2476,22 @@ static RState	OpenBookmarksPanel( Green_RTD *rtd, unsigned short *flags )
 	return BOOKMARKS;
 }
 
+/* Horizontal pan: ~1/5 view width (was full width — too coarse when zoomed) */
+static int	HScrollStep( int vw )
+{
+	int	s = vw / 5;
+	
+	if (s < 16)
+		s = 16;
+	return s;
+}
+
 RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 {
 	Green_Document	*doc = NULL;
 	SDL_Surface	*display = DrawSurface();
 	RState	state = NORMAL;
-	int	f = 0, vw = ViewWidth( rtd );
+	int	f = 0, vw = ViewWidth( rtd ), hstep = HScrollStep( vw );
 	SDLKey	sym = event->key.keysym.sym;
 	
 	if (Green_IsDocValid( rtd, rtd->doc_cur ))
@@ -2499,6 +2555,31 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				/* Select+L2: controls help */
 				g_select_chord = true;
 				return OpenHelpPanel( flags );
+			case SDLK_BACKSPACE:
+				/* Select+R2: toggle auto-zoom to content */
+				g_select_chord = true;
+				rtd->auto_zoom = !rtd->auto_zoom;
+				Green_SaveSettings( rtd );
+				g_az_page = -2;
+				if (rtd->auto_zoom)
+				{
+					ShowToast( "Auto-zoom On" );
+					if (doc)
+						Green_ApplyAutoZoom( doc, vw, display->h );
+					g_az_page = doc ? doc->page_cur : -2;
+				}
+				else
+				{
+					ShowToast( "Auto-zoom Off" );
+					if (doc)
+					{
+						doc->finescale = 1;
+						doc->xoffset = 0;
+						doc->yoffset = 0;
+					}
+				}
+				*flags |= FLAG_RENDER;
+				return NORMAL;
 			case SDLK_RCTRL:
 				return NORMAL;
 			default:
@@ -2609,28 +2690,28 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 			if (!doc)
 				break;
 			
-			Green_ScrollRelative( doc, - vw * rtd->step, 0, vw, display->h, 1 );
+			Green_ScrollRelative( doc, -hstep, 0, vw, display->h, 1 );
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_h:
 			if (!doc)
 				break;
 			
-			Green_ScrollRelative( doc, - vw * rtd->step, 0, vw, display->h, 1 );
+			Green_ScrollRelative( doc, -hstep, 0, vw, display->h, 1 );
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_l:
 			if (!doc)
 				break;
 			
-			Green_ScrollRelative( doc, vw * rtd->step, 0, vw, display->h, 1 );
+			Green_ScrollRelative( doc, hstep, 0, vw, display->h, 1 );
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_RIGHT:
 			if (!doc)
 				break;
 			
-			Green_ScrollRelative( doc, vw * rtd->step, 0, vw, display->h, 1 );
+			Green_ScrollRelative( doc, hstep, 0, vw, display->h, 1 );
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_PAGEUP:
@@ -2638,10 +2719,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				break;
 			
 			if (rtd->side_by_side) {
-				if (!Green_GotoPage( doc, doc->page_cur - 2, true ))
+				if (!GotoPageKeepView( doc, doc->page_cur - 2, vw, display->h ))
 					break;
 			} else {
-				if (!Green_GotoPage( doc, doc->page_cur - 1, true ))
+				if (!GotoPageKeepView( doc, doc->page_cur - 1, vw, display->h ))
 					break;
 			}
 			
@@ -2652,10 +2733,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				break;
 			
 			if (rtd->side_by_side) {
-				if (!Green_GotoPage( doc, doc->page_cur + 2, true ))
+				if (!GotoPageKeepView( doc, doc->page_cur + 2, vw, display->h ))
 					break;
 			} else {
-				if (!Green_GotoPage( doc, doc->page_cur + 1, true ))
+				if (!GotoPageKeepView( doc, doc->page_cur + 1, vw, display->h ))
 					break;
 			}
 			
@@ -2689,10 +2770,17 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_SPACE:
-			/* A on Miyoo Mini: fit width */
+			/* A on Miyoo Mini: fit width (clears auto-zoom) */
 			if (!doc)
 				break;
 			
+			if (rtd->auto_zoom)
+			{
+				rtd->auto_zoom = false;
+				Green_SaveSettings( rtd );
+				g_az_page = -2;
+				ShowToast( "Auto-zoom Off" );
+			}
 			doc->fit_method = WIDTH;
 			doc->finescale = 1;
 			doc->xoffset = 0;
@@ -2709,42 +2797,42 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 			*flags |= FLAG_RENDER;
 			break;
 		case 'e':
-			/* L1 on Miyoo Mini: previous page */
+			/* L1 on Miyoo Mini: previous page (keep zoom + pan) */
 			if (!doc)
 				break;
 			
 			if (rtd->side_by_side)
 			{
-				if (!Green_GotoPage( doc, doc->page_cur - 2, true ))
+				if (!GotoPageKeepView( doc, doc->page_cur - 2, vw, display->h ))
 					break;
 			}
-			else if (!Green_GotoPage( doc, doc->page_cur - 1, true ))
+			else if (!GotoPageKeepView( doc, doc->page_cur - 1, vw, display->h ))
 				break;
 			
 			*flags |= FLAG_RENDER;
 			break;
 		case 't':
-			/* R1 on Miyoo Mini: next page */
+			/* R1 on Miyoo Mini: next page (keep zoom + pan) */
 			if (!doc)
 				break;
 			
 			if (rtd->side_by_side)
 			{
-				if (!Green_GotoPage( doc, doc->page_cur + 2, true ))
+				if (!GotoPageKeepView( doc, doc->page_cur + 2, vw, display->h ))
 					break;
 			}
-			else if (!Green_GotoPage( doc, doc->page_cur + 1, true ))
+			else if (!GotoPageKeepView( doc, doc->page_cur + 1, vw, display->h ))
 				break;
 			
 			*flags |= FLAG_RENDER;
 			break;
 		case SDLK_TAB:
 			/* L2 on Miyoo Mini: back 10 pages */
-			SkipPages( doc, rtd, -10, flags );
+			SkipPages( doc, rtd, -10, vw, display->h, flags );
 			break;
 		case SDLK_BACKSPACE:
 			/* R2 on Miyoo Mini: forward 10 pages */
-			SkipPages( doc, rtd, 10, flags );
+			SkipPages( doc, rtd, 10, vw, display->h, flags );
 			break;
 		case SDLK_RETURN:
 			/* Start on Miyoo Mini: table of contents */
@@ -2850,7 +2938,7 @@ int	Green_SDL_Main( Green_RTD *rtd )
 	
 	SDL_WM_SetCaption( "green - the PDF reader", NULL );
 	
-	/* Miyoo: fixed 640x480 panel, draw to offscreen then blit 180° like Steward */
+	/* Miyoo: fixed 640x480; draw remapped 180° straight into the video surface */
 	g_rotate180 = IsMiyoo();
 	if (g_rotate180)
 	{
@@ -2858,15 +2946,13 @@ int	Green_SDL_Main( Green_RTD *rtd )
 			rtd->width = 640;
 		if (rtd->height <= 0)
 			rtd->height = 480;
-		g_monitor = SDL_SetVideoMode( 640, 480, 32, SDL_SWSURFACE );
-		g_screen = SDL_CreateRGBSurface( SDL_SWSURFACE, rtd->width, rtd->height, 32, 0, 0, 0, 0 );
-		display = g_screen;
+		display = SDL_SetVideoMode( 640, 480, 32, SDL_SWSURFACE );
 	}
 	else
 	{
 		display = SDL_SetVideoMode( rtd->width, rtd->height, 0, SDL_SWSURFACE | SDL_ANYFORMAT | SDL_RESIZABLE | (rtd->flags&GREEN_FULLSCREEN ? SDL_FULLSCREEN : 0) );
 	}
-	if (!display || (g_rotate180 && !g_monitor))
+	if (!display)
 	{
 		SDL_Quit();
 		fprintf( stderr, "SDL_SetVideoMode failed: %s\n", SDL_GetError() );
@@ -2891,6 +2977,8 @@ int	Green_SDL_Main( Green_RTD *rtd )
 	
 	do
 	{
+		if ((flags & FLAG_QUIT))
+			break;
 		if (flags&FLAG_RENDER)
 		{
 			Render( rtd );
