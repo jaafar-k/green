@@ -17,8 +17,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <termios.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <SDL.h>
 #include <pango/pangocairo.h>
 #include "green.h"
@@ -30,7 +33,7 @@
 
 typedef enum
 {
-	NORMAL, GOTO, SEARCH, FIT, ROTATE, MIRROR, TOC, BOOKMARKS
+	NORMAL, GOTO, SEARCH, FIT, ROTATE, MIRROR, TOC, BOOKMARKS, FILEPICKER
 	
 }	RState;
 
@@ -103,7 +106,22 @@ static char	g_toast_msg[32];
 static Uint32	g_toast_until = 0;
 #define TOAST_MS	3000
 
+/* In-app PDF/folder picker (Select+R1); names drawn with Pango for Arabic */
+typedef struct
+{
+	char	*name;
+	char	*path;
+	int	is_dir;
+}	FpEntry;
+
+static FpEntry	*g_fp_entries = NULL;
+static int	g_fp_count = 0, g_fp_sel = 0;
+static char	g_fp_dir[512] = "";
+static bool	g_fp_active = false;
+
 static int	ViewWidth( Green_RTD *rtd );
+static RState	OpenFilePicker( Green_RTD *rtd, unsigned short *flags );
+static void	CloseFilePicker( unsigned short *flags );
 
 static int	IsMiyoo( void )
 {
@@ -1736,6 +1754,8 @@ void	Render( Green_RTD *rtd )
 	// Render bookmarks panel if active
 	RenderBookmarks( display, rtd );
 	
+	RenderFilePicker( display );
+	
 	RenderToast( display );
 	
 	Present();
@@ -1787,6 +1807,349 @@ static void	SkipPages( Green_Document *doc, Green_RTD *rtd, int delta, unsigned 
 	return;
 }
 
+static void	FreeFilePickerEntries( void )
+{
+	int	i;
+	
+	for (i = 0; i < g_fp_count; i++)
+	{
+		free( g_fp_entries[i].name );
+		free( g_fp_entries[i].path );
+	}
+	free( g_fp_entries );
+	g_fp_entries = NULL;
+	g_fp_count = 0;
+	g_fp_sel = 0;
+}
+
+static int	FpEntryCmp( const void *a, const void *b )
+{
+	const FpEntry	*ea = a, *eb = b;
+	
+	if (ea->is_dir != eb->is_dir)
+		return eb->is_dir - ea->is_dir;
+	return strcasecmp( ea->name, eb->name );
+}
+
+static int	IsPdfName( const char *name )
+{
+	size_t	n;
+	
+	if (!name)
+		return 0;
+	n = strlen( name );
+	return n >= 4 && !strcasecmp( name + n - 4, ".pdf" );
+}
+
+static int	FpAddEntry( const char *name, const char *path, int is_dir )
+{
+	FpEntry	*tmp;
+	
+	tmp = realloc( g_fp_entries, (g_fp_count + 1) * sizeof( *g_fp_entries ) );
+	if (!tmp)
+		return 0;
+	g_fp_entries = tmp;
+	g_fp_entries[g_fp_count].name = strdup( name );
+	g_fp_entries[g_fp_count].path = strdup( path );
+	g_fp_entries[g_fp_count].is_dir = is_dir;
+	if (!g_fp_entries[g_fp_count].name || !g_fp_entries[g_fp_count].path)
+	{
+		free( g_fp_entries[g_fp_count].name );
+		free( g_fp_entries[g_fp_count].path );
+		return 0;
+	}
+	g_fp_count++;
+	return 1;
+}
+
+static void	ScanFilePickerDir( void )
+{
+	DIR		*dir;
+	struct dirent	*ent;
+	struct stat	st;
+	char		path[1024];
+	
+	FreeFilePickerEntries();
+	if (!g_fp_dir[0])
+		return;
+	
+	/* Parent entry except at filesystem root */
+	if (strcmp( g_fp_dir, "/" ) != 0)
+		FpAddEntry( "..", "..", 1 );
+	
+	dir = opendir( g_fp_dir );
+	if (!dir)
+		return;
+	
+	while ((ent = readdir( dir )))
+	{
+		if (!strcmp( ent->d_name, "." ) || !strcmp( ent->d_name, ".." ))
+			continue;
+		if (ent->d_name[0] == '.')
+			continue;
+		
+		if (snprintf( path, sizeof( path ), "%s/%s",
+			strcmp( g_fp_dir, "/" ) == 0 ? "" : g_fp_dir, ent->d_name ) >= (int)sizeof( path ))
+			continue;
+		
+		if (stat( path, &st ) != 0)
+			continue;
+		if (S_ISDIR( st.st_mode ))
+			FpAddEntry( ent->d_name, path, 1 );
+		else if (S_ISREG( st.st_mode ) && IsPdfName( ent->d_name ))
+			FpAddEntry( ent->d_name, path, 0 );
+	}
+	closedir( dir );
+	
+	if (g_fp_count > 1)
+		qsort( g_fp_entries, g_fp_count, sizeof( *g_fp_entries ), FpEntryCmp );
+	g_fp_sel = 0;
+}
+
+static void	FilePickerGoUp( void )
+{
+	char	*slash;
+	
+	if (!strcmp( g_fp_dir, "/" ))
+		return;
+	slash = strrchr( g_fp_dir, '/' );
+	if (!slash)
+		return;
+	if (slash == g_fp_dir)
+		g_fp_dir[1] = 0;
+	else
+		*slash = 0;
+	ScanFilePickerDir();
+}
+
+static void	InitFilePickerDir( void )
+{
+	const char	*candidates[] = {
+		"/mnt/SDCARD/Media/PDF",
+		"/mnt/SDCARD/Media",
+		"/mnt/SDCARD",
+		".",
+		NULL
+	};
+	int	i;
+	struct stat	st;
+	
+	if (g_fp_dir[0] && stat( g_fp_dir, &st ) == 0 && S_ISDIR( st.st_mode ))
+		return;
+	
+	for (i = 0; candidates[i]; i++)
+	{
+		if (stat( candidates[i], &st ) == 0 && S_ISDIR( st.st_mode ))
+		{
+			strncpy( g_fp_dir, candidates[i], sizeof( g_fp_dir ) - 1 );
+			g_fp_dir[sizeof( g_fp_dir ) - 1] = 0;
+			return;
+		}
+	}
+	strncpy( g_fp_dir, ".", sizeof( g_fp_dir ) - 1 );
+}
+
+static void	CloseFilePicker( unsigned short *flags )
+{
+	g_fp_active = false;
+	*flags |= FLAG_RENDER;
+}
+
+static RState	OpenFilePicker( Green_RTD *rtd, unsigned short *flags )
+{
+	(void)rtd;
+	if (g_fp_active)
+	{
+		CloseFilePicker( flags );
+		return NORMAL;
+	}
+	
+	g_toc_active = false;
+	g_bm_active = false;
+	InitFilePickerDir();
+	ScanFilePickerDir();
+	g_fp_active = true;
+	*flags |= FLAG_RENDER;
+	return FILEPICKER;
+}
+
+static int	FilePickerActivate( Green_RTD *rtd, unsigned short *flags )
+{
+	FpEntry	*e;
+	int	id;
+	
+	if (g_fp_count <= 0 || g_fp_sel < 0 || g_fp_sel >= g_fp_count)
+		return 0;
+	
+	e = &g_fp_entries[g_fp_sel];
+	if (e->is_dir)
+	{
+		if (!strcmp( e->name, ".." ))
+			FilePickerGoUp();
+		else
+		{
+			strncpy( g_fp_dir, e->path, sizeof( g_fp_dir ) - 1 );
+			g_fp_dir[sizeof( g_fp_dir ) - 1] = 0;
+			ScanFilePickerDir();
+		}
+		*flags |= FLAG_RENDER;
+		return 1;
+	}
+	
+	id = Green_Open( rtd, e->path );
+	if (id < 0)
+	{
+		ShowToast( "Open Failed" );
+		*flags |= FLAG_RENDER;
+		return 0;
+	}
+	
+	rtd->doc_cur = id;
+	g_toc_doc = -1;
+	CloseFilePicker( flags );
+	ShowToast( "Opened" );
+	*flags |= FLAG_RENDER;
+	return 1;
+}
+
+static void	RenderFilePicker( SDL_Surface *display )
+{
+	SDL_Rect	panel, hl;
+	int		x0, y0, line_h, max_lines, start, i, text_w;
+	Uint8		er, eg, eb;
+	char		label[600];
+	
+	if (!g_fp_active)
+		return;
+	
+	panel.x = 0;
+	panel.y = 0;
+	panel.w = display->w;
+	panel.h = display->h;
+	SDL_FillRect( display, &panel, SDL_MapRGB( display->format, 0x12, 0x12, 0x18 ) );
+	
+	x0 = 8;
+	y0 = 8;
+	DrawString( display, x0, y0, "Open PDF", SDL_MapRGB( display->format, 0xE8, 0xE8, 0xE8 ) );
+	y0 += 18;
+	DrawUtf8( display, x0, y0, display->w - 16, 18, g_fp_dir, 0x88, 0x88, 0xAA );
+	y0 += 20;
+	DrawString( display, x0, y0, "A:open  B:up/back  Select+R1:close",
+		SDL_MapRGB( display->format, 0x70, 0x70, 0x70 ) );
+	y0 += 20;
+	
+	line_h = 18;
+	max_lines = (display->h - y0 - 8) / line_h;
+	if (max_lines <= 0)
+		return;
+	
+	if (g_fp_count <= 0)
+	{
+		DrawString( display, x0, y0, "No folders or PDFs here",
+			SDL_MapRGB( display->format, 0xB8, 0xB8, 0xB8 ) );
+		return;
+	}
+	
+	start = 0;
+	if (g_fp_count > max_lines)
+	{
+		start = g_fp_sel - max_lines + 1;
+		if (start < 0)
+			start = 0;
+		if (start + max_lines > g_fp_count)
+			start = g_fp_count - max_lines;
+	}
+	
+	for (i = start; i < g_fp_count && i < start + max_lines; i++)
+	{
+		int	y = y0 + (i - start) * line_h;
+		
+		if (i == g_fp_sel)
+		{
+			hl.x = 0;
+			hl.y = y;
+			hl.w = display->w;
+			hl.h = line_h;
+			SDL_FillRect( display, &hl, SDL_MapRGB( display->format, 0x2E, 0x2E, 0x5E ) );
+			er = 0xFF;
+			eg = 0xFF;
+			eb = 0x00;
+		}
+		else
+		{
+			er = 0xC0;
+			eg = 0xC0;
+			eb = 0xC0;
+		}
+		
+		if (g_fp_entries[i].is_dir)
+			snprintf( label, sizeof( label ), "[%s]", g_fp_entries[i].name );
+		else
+			snprintf( label, sizeof( label ), "%s", g_fp_entries[i].name );
+		
+		text_w = display->w - x0 - 8;
+		DrawUtf8( display, x0, y, text_w, line_h, label, er, eg, eb );
+	}
+}
+
+static RState	FilePickerInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
+{
+	SDLKey	sym = event->key.keysym.sym;
+	
+	/* Select+R1 while open: close */
+	if (g_select_held && sym == 't')
+	{
+		g_select_chord = true;
+		CloseFilePicker( flags );
+		return NORMAL;
+	}
+	
+	switch (sym)
+	{
+		case SDLK_ESCAPE:
+		case SDLK_HOME:
+		case SDLK_LCTRL:
+		case SDLK_LEFT:
+		case 'h':
+		case SDLK_BACKSPACE:
+			/* B / Menu / Left: parent folder, or close at root */
+			if (strcmp( g_fp_dir, "/" ) == 0)
+			{
+				CloseFilePicker( flags );
+				return NORMAL;
+			}
+			FilePickerGoUp();
+			*flags |= FLAG_RENDER;
+			break;
+		case SDLK_j:
+		case SDLK_DOWN:
+			if (g_fp_count > 0 && g_fp_sel < g_fp_count - 1)
+				g_fp_sel++;
+			*flags |= FLAG_RENDER;
+			break;
+		case SDLK_k:
+		case SDLK_UP:
+			if (g_fp_count > 0 && g_fp_sel > 0)
+				g_fp_sel--;
+			*flags |= FLAG_RENDER;
+			break;
+		case SDLK_SPACE:
+		case SDLK_RETURN:
+		case SDLK_RIGHT:
+		case 'l':
+			if (FilePickerActivate( rtd, flags ) && !g_fp_active)
+				return NORMAL;
+			break;
+		case 't':
+			/* R1 alone while picker open: ignore page-turn */
+			break;
+		default:
+			break;
+	}
+	
+	return FILEPICKER;
+}
+
 static RState	OpenTOCPanel( Green_RTD *rtd, unsigned short *flags )
 {
 	/* Start / o: toggle TOC */
@@ -1801,6 +2164,7 @@ static RState	OpenTOCPanel( Green_RTD *rtd, unsigned short *flags )
 		return NORMAL;
 	
 	g_bm_active = false;
+	g_fp_active = false;
 	EnsureTOC( rtd );
 	g_toc_active = true;
 	*flags |= FLAG_RENDER;
@@ -1822,6 +2186,7 @@ static RState	OpenBookmarksPanel( Green_RTD *rtd, unsigned short *flags )
 	
 	LoadBookmarks();
 	g_toc_active = false;
+	g_fp_active = false;
 	RebuildBookmarkView( rtd );
 	g_bm_active = true;
 	*flags |= FLAG_RENDER;
@@ -1888,6 +2253,10 @@ RState	NormalInput( Green_RTD *rtd, SDL_Event *event, unsigned short *flags )
 				rtd->side_by_side = !rtd->side_by_side;
 				*flags |= FLAG_RENDER;
 				return NORMAL;
+			case 't':
+				/* Select+R1: PDF/folder picker */
+				g_select_chord = true;
+				return OpenFilePicker( rtd, flags );
 			case SDLK_RCTRL:
 				return NORMAL;
 			default:
@@ -2305,7 +2674,8 @@ int	Green_SDL_Main( Green_RTD *rtd )
 					{
 						/* Select release: toggle bookmarks if no chord was used */
 						if (g_select_held && !g_select_chord
-							&& (g_state == NORMAL || g_state == BOOKMARKS || g_state == TOC))
+							&& (g_state == NORMAL || g_state == BOOKMARKS || g_state == TOC)
+							&& !g_fp_active)
 							g_state = OpenBookmarksPanel( rtd, &flags );
 						g_select_held = false;
 						g_select_chord = false;
@@ -2343,7 +2713,8 @@ int	Green_SDL_Main( Green_RTD *rtd )
 					break;
 				case SDL_KEYDOWN:
 					if (event.key.keysym.sym == SDLK_RCTRL
-						&& (g_state == NORMAL || g_state == BOOKMARKS || g_state == TOC))
+						&& (g_state == NORMAL || g_state == BOOKMARKS
+							|| g_state == TOC || g_state == FILEPICKER))
 					{
 						/* Select press: wait for chord or release (toggle) */
 						g_select_held = true;
@@ -2383,7 +2754,7 @@ int	Green_SDL_Main( Green_RTD *rtd )
 						g_y_held = false;
 						g_y_chord = false;
 						/* Menu on Miyoo Mini: leave overlays, else close file */
-						if (g_state != NORMAL || g_toc_active || g_bm_active)
+						if (g_state != NORMAL || g_toc_active || g_bm_active || g_fp_active)
 						{
 							g_state = NORMAL;
 							if (g_toc_active)
@@ -2396,9 +2767,23 @@ int	Green_SDL_Main( Green_RTD *rtd )
 								g_bm_active = false;
 								flags |= FLAG_RENDER;
 							}
+							if (g_fp_active)
+								CloseFilePicker( &flags );
 						}
 						else
 							CloseCurrentFile( rtd, &flags );
+					}
+					else if (g_state == FILEPICKER)
+					{
+						/* Select chords while picker is open */
+						if (g_select_held && event.key.keysym.sym == 't')
+						{
+							g_select_chord = true;
+							CloseFilePicker( &flags );
+							g_state = NORMAL;
+						}
+						else
+							g_state = FilePickerInput( rtd, &event, &flags );
 					}
 					else if (g_state == TOC)
 						g_state = TOCInput( rtd, &event, &flags );

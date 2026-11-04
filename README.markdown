@@ -103,6 +103,7 @@ Miyoo buttons are exposed as SDL keys (Onion/MinUI). Mapped as:
 | Select + X | Mirror horizontally |
 | Select + Y | Mirror vertically |
 | Select + L1 | Toggle dual-page mode |
+| Select + R1 | Open PDF/folder picker (Arabic filenames OK) |
 | Menu | Close file (quit if none left) |
 
 Select is a hold-modifier: chords fire on the face button; a plain Select release opens bookmarks.
@@ -196,6 +197,7 @@ This fork adds the following on top of the original `green`:
    `~/.green.pages` and jumps back there when the file is opened again.
  - **Miyoo Mini controls**: handheld mapping with Select chords (tap Select =
    bookmarks, Start = TOC, Select+A/B/X/Y = night / bookmark / mirrors).
- - **Arabic TOC**: table-of-contents titles render via Pango (UTF-8, shaping,
-   RTL) when a font such as DejaVu Sans is available to fontconfig.
+ - **Arabic TOC / file picker**: TOC titles and the in-app PDF browser
+   (Select+R1) render via Pango (UTF-8, shaping, RTL) when a font such as
+   DejaVu Sans is available to fontconfig.
 
