@@ -22,5 +22,5 @@ do
 		continue
 	fi
 	echo "$selected_file"
-	LD_LIBRARY_PATH="$sysdir/lib/parasyte:$LD_LIBRARY_PATH" "$greendir/green" "$selected_file"
+	LD_LIBRARY_PATH="$greendir/lib:$sysdir/lib/parasyte:$LD_LIBRARY_PATH" "$greendir/green" "$selected_file"
 done

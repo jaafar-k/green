@@ -178,6 +178,7 @@ static const char	*g_help_lines[] = {
 static int	ViewWidth( Green_RTD *rtd );
 static RState	OpenFilePicker( Green_RTD *rtd, unsigned short *flags );
 static void	CloseFilePicker( unsigned short *flags );
+static void	RenderFilePicker( SDL_Surface *display );
 static RState	OpenHelpPanel( unsigned short *flags );
 static void	RenderHelp( SDL_Surface *display );
 static RState	HelpInput( SDL_Event *event, unsigned short *flags );
